@@ -62,14 +62,17 @@ def centroid_to_hue(hz: float) -> float:
 
 # ---- Layer configuration ---- #
 
-# Phase 9 preset roster. Each shader is a self-contained fragment-only
+# Phase 9-11 preset roster. Each shader is a self-contained fragment-only
 # preset using the shared uniform interface (see `shaders/*.frag`):
-#   flow    — domain-warped FBM noise field; organic mist
-#   prism   — rotating polygon SDF; hard-edged colour shards
-#   plasma  — slow-flowing FBM blob; lava-lamp pad texture
-#   shock   — concentric audio-shock waves; great on percussion
-#   lattice — animated voronoi cells; bioluminescent grid
-PRESETS = ("flow", "prism", "plasma", "shock", "lattice")
+#   flow      — domain-warped FBM noise field; organic mist
+#   prism     — rotating polygon SDF; hard-edged colour shards
+#   plasma    — slow-flowing FBM blob; lava-lamp pad texture
+#   shock     — concentric audio-shock waves; great on percussion
+#   lattice   — animated voronoi cells; bioluminescent grid
+#   particles — procedural 24-particle field; explosive bursts on
+#               onsets, density-gated emission. Heavier than the others —
+#               used for 1–2 layers in DEFAULT_LAYERS, not 14.
+PRESETS = ("flow", "prism", "plasma", "shock", "lattice", "particles")
 
 
 @dataclass
@@ -95,20 +98,20 @@ class Layer:
 # Ch9-11:  FX bursts — onset-reactive, expressive.
 # Ch12-14: slow CV / drones — quiet smooth presets that don't over-fire.
 DEFAULT_LAYERS: list[Layer] = [
-    Layer(preset="shock",   channel=0),    # kick     → radial pulse
-    Layer(preset="prism",   channel=1),    # bass     → rotating polygon
-    Layer(preset="lattice", channel=2),    # lead     → voronoi grid
-    Layer(preset="plasma",  channel=3),    # pad      → smooth plasma
-    Layer(preset="flow",    channel=4),    # perc     → fbm mist
-    Layer(preset="flow",    channel=5),    # perc
-    Layer(preset="lattice", channel=6),    # perc
-    Layer(preset="shock",   channel=7),    # perc
-    Layer(preset="shock",   channel=8),    # FX
-    Layer(preset="prism",   channel=9),    # FX
-    Layer(preset="lattice", channel=10),   # FX
-    Layer(preset="plasma",  channel=11),   # CV / drone
-    Layer(preset="plasma",  channel=12),   # CV / drone
-    Layer(preset="flow",    channel=13),   # CV / drone
+    Layer(preset="shock",     channel=0),    # kick      → radial pulse
+    Layer(preset="prism",     channel=1),    # bass      → rotating polygon
+    Layer(preset="lattice",   channel=2),    # lead      → voronoi grid
+    Layer(preset="plasma",    channel=3),    # pad       → smooth plasma
+    Layer(preset="flow",      channel=4),    # perc      → fbm mist
+    Layer(preset="flow",      channel=5),    # perc
+    Layer(preset="lattice",   channel=6),    # perc
+    Layer(preset="shock",     channel=7),    # perc
+    Layer(preset="particles", channel=8),    # FX burst  → particle swarm
+    Layer(preset="prism",     channel=9),    # FX
+    Layer(preset="particles", channel=10),   # FX burst
+    Layer(preset="plasma",    channel=11),   # CV / drone
+    Layer(preset="plasma",    channel=12),   # CV / drone
+    Layer(preset="flow",      channel=13),   # CV / drone
 ]
 
 
@@ -258,29 +261,45 @@ def _set_uniform(program: moderngl.Program, name: str, value: object) -> None:
 
 
 class Compositor:
-    """Final-stage post-FX over the shader-engine FBO.
+    """Final-stage post-FX over the shader-engine FBO, with optional
+    frame-to-frame feedback trail.
 
-    Phase-10 reshape: this used to also blend an SDXL-Turbo AI texture,
-    but the AI tier was repurposed (it now writes shader *parameters*
-    instead of producing image bytes), so the compositor is shader-only.
+    Phase-10 reshape: stripped the V1 SDXL AI-texture blending; the
+    compositor became shader-output post-FX only.
+
+    Phase-11 addition: a feedback FBO pair (`_feedback_textures`) lets
+    successive frames accumulate. When `state.fx.trail > 0` the render
+    pipeline becomes:
+
+        ShaderEngine → shader_tex
+        feedback.frag(shader_tex, prev_feedback) → curr_feedback   (max-blend, decayed)
+        composite.frag(curr_feedback) → screen                     (kaleidoscope / glitch / chromatic / saturation)
+
+    Trail = 0 collapses to the phase-10 path: composite samples
+    `shader_tex` directly. The feedback FBOs are still allocated but
+    untouched, so toggling trail at runtime is just a flag flip.
+
     Owns:
-      * an offscreen colour FBO that ShaderEngine draws into instead of
-        the window's default framebuffer
-      * a fragment-shader Program (`composite.frag`) that runs the
-        kaleidoscope / glitch / chromatic / saturation chain
+      * an offscreen colour FBO + texture (`shader_tex`) that
+        ShaderEngine draws into instead of the window's default FB
+      * a ping-pong pair of feedback FBOs/textures for trail accumulation
+      * two fragment-shader Programs — `feedback.frag` (max-blend with
+        decay) and `composite.frag` (post-FX chain)
 
-    The offscreen FBO size follows the window — we recreate it lazily if
-    it's queried with a new size. Window resize on mglw 3.x doesn't
-    notify us, so this is the cheapest reliable approach.
+    All FBOs follow the window size — recreated lazily on resize.
     """
 
     def __init__(self, ctx: moderngl.Context) -> None:
         self.ctx = ctx
 
-        # Composite program (single fragment shader sharing quad.vert)
         vert_src = (SHADER_DIR / "quad.vert").read_text()
-        frag_src = (SHADER_DIR / "composite.frag").read_text()
-        self.program = ctx.program(vertex_shader=vert_src, fragment_shader=frag_src)
+        composite_src = (SHADER_DIR / "composite.frag").read_text()
+        feedback_src = (SHADER_DIR / "feedback.frag").read_text()
+
+        self.program = ctx.program(vertex_shader=vert_src, fragment_shader=composite_src)
+        self.feedback_program = ctx.program(
+            vertex_shader=vert_src, fragment_shader=feedback_src
+        )
 
         quad_vertices = np.array(
             [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0],
@@ -288,28 +307,61 @@ class Compositor:
         )
         self.vbo = ctx.buffer(quad_vertices.tobytes())
         self.vao = ctx.simple_vertex_array(self.program, self.vbo, "in_pos")
+        self.feedback_vao = ctx.simple_vertex_array(
+            self.feedback_program, self.vbo, "in_pos"
+        )
 
-        # The composite shader binds one sampler — the shader-engine FBO.
+        # Sampler unit assignments — composite reads unit 0, feedback
+        # reads unit 0 (shader) + unit 1 (prev feedback).
         _set_uniform(self.program, "u_shader_tex", 0)
+        _set_uniform(self.feedback_program, "u_shader_tex", 0)
+        _set_uniform(self.feedback_program, "u_prev_feedback", 1)
 
-        # Offscreen FBO + colour texture; lazily recreated on resize.
+        # Offscreen FBO for the shader pass; lazily recreated on resize.
         self._fbo_size: tuple[int, int] = (0, 0)
         self._shader_tex: moderngl.Texture | None = None
         self._fbo: moderngl.Framebuffer | None = None
 
+        # Feedback ping-pong pair. `_feedback_idx` points at the slot
+        # that holds the *previous* frame's accumulated output; we write
+        # the new accumulation into `1 - _feedback_idx` then flip.
+        self._feedback_textures: list[moderngl.Texture | None] = [None, None]
+        self._feedback_fbos: list[moderngl.Framebuffer | None] = [None, None]
+        self._feedback_idx = 0
+
+    def _build_color_fbo(self, size: tuple[int, int]) -> tuple[moderngl.Texture, moderngl.Framebuffer]:
+        tex = self.ctx.texture(size, components=4, dtype="f1")
+        tex.repeat_x = False
+        tex.repeat_y = False
+        tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        fbo = self.ctx.framebuffer(color_attachments=[tex])
+        return tex, fbo
+
     def offscreen_fbo(self, size: tuple[int, int]) -> moderngl.Framebuffer:
-        """Return the offscreen FBO, recreating it if `size` changed."""
+        """Return the offscreen FBO, recreating it (and the feedback
+        pair) if `size` changed."""
         if size != self._fbo_size or self._fbo is None:
-            if self._shader_tex is not None:
-                self._shader_tex.release()
-            if self._fbo is not None:
-                self._fbo.release()
-            self._shader_tex = self.ctx.texture(size, components=4, dtype="f1")
-            self._shader_tex.repeat_x = False
-            self._shader_tex.repeat_y = False
-            self._shader_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-            self._fbo = self.ctx.framebuffer(color_attachments=[self._shader_tex])
+            # Release everything from the old size.
+            for t in (self._shader_tex, *self._feedback_textures):
+                if t is not None:
+                    t.release()
+            for f in (self._fbo, *self._feedback_fbos):
+                if f is not None:
+                    f.release()
+
+            self._shader_tex, self._fbo = self._build_color_fbo(size)
+            ft0, ff0 = self._build_color_fbo(size)
+            ft1, ff1 = self._build_color_fbo(size)
+            self._feedback_textures = [ft0, ft1]
+            self._feedback_fbos = [ff0, ff1]
+            # Initialise both feedback FBOs to black so the first frame
+            # doesn't sample garbage.
+            for fbo in self._feedback_fbos:
+                if fbo is not None:
+                    fbo.use()
+                    self.ctx.clear(0.0, 0.0, 0.0, 1.0)
             self._fbo_size = size
+        assert self._fbo is not None  # narrowed by _build_color_fbo above
         return self._fbo
 
     def render(
@@ -319,21 +371,60 @@ class Compositor:
         glitch: float = 0.0,
         chromatic: float = 0.0,
         kaleidoscope_segments: int = 1,
+        trail: float = 0.0,
     ) -> None:
         """Draw the composite to the currently-bound framebuffer.
 
-        Caller must have already drawn the shader pass into `offscreen_fbo`.
-        The default framebuffer should be bound on entry so this writes
-        to the visible window.
+        Caller must have already drawn the shader pass into the
+        `offscreen_fbo`. When `trail > 0`, a feedback pass runs first
+        (writing to the current feedback FBO), and the composite reads
+        from that. When `trail == 0` (or near-zero), the composite reads
+        the shader FBO directly — same fast path as phase-10.
+
+        The default framebuffer should be bound on entry so the
+        composite pass writes to the visible window.
         """
+        if self._shader_tex is None:
+            return  # offscreen_fbo() never called; nothing to composite
+
         # The composite pass is fully opaque — disable blending so a
         # leftover ADD_ALPHA from the shader pass doesn't affect us.
         self.ctx.disable(moderngl.BLEND)
 
-        if self._shader_tex is None:
-            return  # offscreen_fbo() never called; nothing to composite
-        self._shader_tex.use(location=0)
+        # Source the composite samples from. By default it's the raw
+        # shader output; with trail on, it's the feedback FBO.
+        composite_input: moderngl.Texture = self._shader_tex
 
+        if trail > 1e-3:
+            # Save the currently-bound framebuffer (the screen) so we
+            # can write to a feedback FBO and then come back.
+            target_fbo = self.ctx.fbo
+
+            # Feedback pass: write to the slot at `1 - _feedback_idx`,
+            # sample shader_tex (unit 0) + prev feedback (unit 1).
+            cur_idx = 1 - self._feedback_idx
+            cur_fbo = self._feedback_fbos[cur_idx]
+            cur_tex = self._feedback_textures[cur_idx]
+            assert cur_fbo is not None and cur_tex is not None
+            cur_fbo.use()
+            self.ctx.viewport = (0, 0, *self._fbo_size)
+            self._shader_tex.use(location=0)
+            prev_tex = self._feedback_textures[self._feedback_idx]
+            assert prev_tex is not None
+            prev_tex.use(location=1)
+            _set_uniform(self.feedback_program, "u_trail", float(trail))
+            self.feedback_vao.render(moderngl.TRIANGLE_STRIP)
+
+            # Flip the ping-pong pointer so the next frame reads from
+            # this freshly-written texture as its "prev".
+            self._feedback_idx = cur_idx
+            composite_input = cur_tex
+
+            # Restore the caller's framebuffer for the composite pass.
+            target_fbo.use()
+            self.ctx.viewport = (0, 0, *self._fbo_size)
+
+        composite_input.use(location=0)
         _set_uniform(self.program, "u_saturation", float(saturation))
         _set_uniform(self.program, "u_glitch", float(glitch))
         _set_uniform(self.program, "u_chromatic", float(chromatic))
@@ -445,6 +536,7 @@ class ApopheniaWindow(mglw.WindowConfig):
                     glitch=state.fx.glitch,
                     chromatic=state.fx.chromatic,
                     kaleidoscope_segments=state.fx.kaleidoscope,
+                    trail=state.fx.trail,
                 )
             else:
                 self.compositor.render()  # all-defaults pass-through

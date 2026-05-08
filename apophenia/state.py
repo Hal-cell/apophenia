@@ -77,6 +77,11 @@ class FxState(BaseModel):
     kaleidoscope: int = Field(1, ge=1, le=12)
     """Segment count; 1 = off."""
 
+    trail: float = Field(0.0, ge=0.0, le=0.99)
+    """Frame-to-frame feedback decay. 0 = no trail (each frame stands
+    alone). Approaching 1 = trails persist across many frames. Capped
+    at 0.99 to avoid an infinite-energy feedback loop."""
+
 
 class TransportState(BaseModel):
     freeze: bool = False

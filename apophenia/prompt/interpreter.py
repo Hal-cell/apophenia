@@ -122,8 +122,8 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "pink":      {"palette": {"hue": 0.9}},
 
     # ---- FX modifiers ---- #
-    "smooth":    {"fx": {"glitch": 0.0, "chromatic": 0.0}},
-    "clean":     {"fx": {"glitch": 0.0, "chromatic": 0.0}},
+    "smooth":    {"fx": {"glitch": 0.0, "chromatic": 0.0, "trail": 0.0}},
+    "clean":     {"fx": {"glitch": 0.0, "chromatic": 0.0, "trail": 0.0}},
     "glitchy":   {"fx": {"glitch": 0.6}},
     "broken":    {"fx": {"glitch": 0.8, "chromatic": 0.4}},
     "shattered": {"fx": {"glitch": 0.5, "chromatic": 0.3},
@@ -136,6 +136,18 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "kaleidoscope": {"fx": {"kaleidoscope": 6}},
     "mirror":    {"fx": {"kaleidoscope": 2}},
     "fragmented":{"fx": {"kaleidoscope": 4}},
+
+    # ---- Trail / feedback ---- #
+    "trail":     {"fx": {"trail": 0.7}},
+    "trails":    {"fx": {"trail": 0.7}},
+    "smear":     {"fx": {"trail": 0.85}},
+    "ghost":     {"fx": {"trail": 0.8}, "palette": {"saturation": 0.7}},
+    "ghosting":  {"fx": {"trail": 0.85}},
+    "sustained": {"fx": {"trail": 0.6},
+                  "motion": {"speed": 0.6, "onset_sensitivity": 0.7}},
+    "echo":      {"fx": {"trail": 0.75}},
+    "lingering": {"fx": {"trail": 0.65}},
+    "decay":     {"fx": {"trail": 0.5}},  # mid-trail, "fading away"
 
     # ---- Behaviour primitives ---- #
     "bloom":     {"motion": {"speed": 0.7, "density": 0.6,

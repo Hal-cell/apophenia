@@ -40,3 +40,28 @@ def test_motion_clamps_via_validation() -> None:
 def test_channel_weight_wrong_length_rejected() -> None:
     with pytest.raises(ValidationError):
         VisualState(channel_weight=[1.0, 1.0, 1.0])
+
+
+def test_fx_trail_default_zero_and_valid_range() -> None:
+    """Phase-11 FxState.trail: defaults to 0, valid in [0, 0.99]. Capped
+    below 1.0 to prevent runaway feedback loops."""
+    s = VisualState()
+    assert s.fx.trail == 0.0
+    # Boundary values should validate.
+    s_lo = VisualState()
+    s_lo.fx.trail = 0.0
+    s_hi = VisualState()
+    s_hi.fx.trail = 0.99
+
+
+def test_fx_trail_one_or_above_rejected() -> None:
+    """trail=1 would mean the previous frame survives forever — pydantic
+    refuses anything ≥ 0.99 + epsilon."""
+    from apophenia.state import FxState
+
+    with pytest.raises(ValidationError):
+        FxState(trail=1.0)
+    with pytest.raises(ValidationError):
+        FxState(trail=1.5)
+    with pytest.raises(ValidationError):
+        FxState(trail=-0.1)

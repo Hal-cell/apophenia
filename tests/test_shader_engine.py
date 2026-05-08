@@ -479,6 +479,139 @@ def test_compositor_glitch_displaces_some_rows() -> None:
         ctx.release()
 
 
+def test_compositor_trail_zero_is_identity() -> None:
+    """trail=0 should bypass the feedback pass entirely — output equals
+    the shader input untouched (modulo post-FX defaults)."""
+    import numpy as np
+
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        size = (16, 16)
+        rgba = np.zeros((16, 16, 4), dtype=np.uint8)
+        rgba[..., 1] = 200  # solid green
+        rgba[..., 3] = 255
+        _paint_shader_fbo(comp, size, rgba.tobytes())
+
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        out_fbo = ctx.framebuffer(color_attachments=[out_tex])
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(trail=0.0)
+
+        idx = (8 * size[0] + 8) * 4
+        raw = out_fbo.read(components=4, dtype="f1")
+        assert 180 <= raw[idx + 1] <= 215, f"green should pass through; got G={raw[idx + 1]}"
+    finally:
+        ctx.release()
+
+
+def test_compositor_trail_retains_decayed_previous_frame() -> None:
+    """Two-pass feedback: paint a bright frame with trail=0.7, then
+    paint a black frame with trail=0.7. The second output should
+    retain ~70% of the first frame's brightness because the feedback
+    FBO's max-blend kept it."""
+    import numpy as np
+
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        size = (16, 16)
+
+        # ---- Frame 1: bright red shader output ---- #
+        red = np.zeros((16, 16, 4), dtype=np.uint8)
+        red[..., 0] = 255  # R = 255
+        red[..., 3] = 255
+        _paint_shader_fbo(comp, size, red.tobytes())
+
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        out_fbo = ctx.framebuffer(color_attachments=[out_tex])
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(trail=0.7)
+
+        # Frame 1 output: max(red, prev*0.7) = max(red, black*0.7) = red.
+        idx = (8 * size[0] + 8) * 4
+        raw1 = out_fbo.read(components=4, dtype="f1")
+        assert raw1[idx] >= 240, f"frame 1 R should be ~255; got {raw1[idx]}"
+
+        # ---- Frame 2: black shader output (no fresh content) ---- #
+        black = np.zeros((16, 16, 4), dtype=np.uint8)
+        black[..., 3] = 255
+        _paint_shader_fbo(comp, size, black.tobytes())
+
+        out_fbo.use()
+        ctx.clear(0, 0, 0, 1)
+        ctx.viewport = (0, 0, *size)
+        comp.render(trail=0.7)
+
+        # Frame 2 output: max(black, red*0.7) = red*0.7 ≈ 178.
+        # Allow a wide range because LINEAR sampling + float precision
+        # can drift the reading slightly. Anything in the upper-mid
+        # range proves the trail kicked in.
+        raw2 = out_fbo.read(components=4, dtype="f1")
+        assert 150 <= raw2[idx] <= 210, (
+            f"frame 2 should retain ~70% of frame 1's R; got {raw2[idx]}"
+        )
+        # The other channels should still be near zero.
+        assert raw2[idx + 1] < 30
+        assert raw2[idx + 2] < 30
+    finally:
+        ctx.release()
+
+
+def test_compositor_trail_decays_to_zero_over_many_frames() -> None:
+    """With trail < 1, repeated black frames should asymptote toward
+    zero — geometric decay. After ~10 frames at trail=0.5, the original
+    bright pixel should be gone."""
+    import numpy as np
+
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        size = (8, 8)
+
+        # Frame 1: red.
+        red = np.zeros((8, 8, 4), dtype=np.uint8)
+        red[..., 0] = 255
+        red[..., 3] = 255
+        _paint_shader_fbo(comp, size, red.tobytes())
+
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        out_fbo = ctx.framebuffer(color_attachments=[out_tex])
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(trail=0.5)
+
+        # Frames 2–10: black inputs, each frame the trail decays by 0.5.
+        black = np.zeros((8, 8, 4), dtype=np.uint8)
+        black[..., 3] = 255
+        for _ in range(10):
+            _paint_shader_fbo(comp, size, black.tobytes())
+            out_fbo.use()
+            ctx.viewport = (0, 0, *size)
+            comp.render(trail=0.5)
+
+        idx = (4 * size[0] + 4) * 4
+        raw = out_fbo.read(components=4, dtype="f1")
+        # 255 * 0.5^10 ≈ 0.25 → far below threshold.
+        assert raw[idx] < 5, f"trail should have decayed to near-zero; got {raw[idx]}"
+    finally:
+        ctx.release()
+
+
 def test_compositor_kaleidoscope_1_is_identity() -> None:
     """kaleidoscope=1 must leave UV untouched — output equals input."""
     import numpy as np
