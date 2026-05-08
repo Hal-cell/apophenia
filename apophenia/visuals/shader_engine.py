@@ -235,19 +235,37 @@ def _set_uniform(program: moderngl.Program, name: str, value: object) -> None:
 
 
 class Compositor:
-    """Final-stage composite: blend the shader-engine FBO with the AI texture.
+    """Final-stage composite: shader FBO + AI textures + post-FX.
 
-    Owns three GL resources:
-      * an offscreen colour FBO that ShaderEngine renders into instead of
+    Owns:
+      * an offscreen colour FBO that ShaderEngine draws into instead of
         the window's default framebuffer
-      * an AI texture that we upload from CPU each time AIBus has a fresh
-        frame (uploads are slow; we skip them when `gen_count` hasn't moved)
-      * a fragment-shader Program (`composite.frag`) that mixes the two
+      * **two** AI textures — `prev` and `current` — so the composite
+        shader can crossfade between successive SDXL gens (otherwise raw
+        cuts at 5–15 fps look like a slideshow)
+      * a fragment-shader Program (`composite.frag`) that runs the full
+        kaleidoscope / glitch / chromatic / saturation chain
+
+    Time-interpolation between AI frames is driven by a monotonic clock
+    captured in `maybe_upload_ai_frame()`. Each render call recomputes
+    `ai_interp ∈ [0, 1]` from elapsed wallclock seconds divided by the
+    estimated AI period (smoothed from observed `latency_ms`).
 
     The offscreen FBO size follows the window — we recreate it lazily if
-    it's queried with a new size. Window resize on mglw 3.x doesn't notify
-    us, so this is the cheapest reliable approach.
+    it's queried with a new size. Window resize on mglw 3.x doesn't
+    notify us, so this is the cheapest reliable approach.
+
+    AI-texture swap (no GPU-to-GPU copy): we hold two textures in a list
+    and flip an index each upload. The "current" texture is the one we
+    just wrote to; the "prev" one still holds whatever we wrote there
+    on the *previous* upload — exactly the predecessor frame.
     """
+
+    # Interpolation period default. SDXL-Turbo on M3 Max produces a frame
+    # every ~70–200ms; if `latency_ms` arrives in the AIFrame we adapt
+    # to it via an exponential moving average.
+    DEFAULT_AI_PERIOD_S = 0.2
+    AI_PERIOD_EMA_ALPHA = 0.3  # how aggressively to track latency changes
 
     def __init__(self, ctx: moderngl.Context, ai_resolution: int = 512) -> None:
         self.ctx = ctx
@@ -266,25 +284,38 @@ class Compositor:
         self.vao = ctx.simple_vertex_array(self.program, self.vbo, "in_pos")
 
         # Bind sampler units explicitly so the fragment shader can `texture()`
-        # on `u_shader_tex` (unit 0) and `u_ai_tex` (unit 1).
+        # on `u_shader_tex` (unit 0), `u_ai_tex_prev` (unit 1) and
+        # `u_ai_tex_cur` (unit 2).
         _set_uniform(self.program, "u_shader_tex", 0)
-        _set_uniform(self.program, "u_ai_tex", 1)
+        _set_uniform(self.program, "u_ai_tex_prev", 1)
+        _set_uniform(self.program, "u_ai_tex_cur", 2)
 
         # Offscreen FBO + colour texture; lazily recreated on resize.
         self._fbo_size: tuple[int, int] = (0, 0)
         self._shader_tex: moderngl.Texture | None = None
         self._fbo: moderngl.Framebuffer | None = None
 
-        # AI texture: uploaded from CPU when a new AIFrame is published.
-        # Default to a 1x1 black pixel so the shader has something valid
-        # to sample before SDXL has produced anything.
-        self.ai_texture = ctx.texture((1, 1), components=3, dtype="f1")
-        self.ai_texture.write(b"\x00\x00\x00")
-        self.ai_texture.build_mipmaps()
-        self.ai_texture.repeat_x = False
-        self.ai_texture.repeat_y = False
-        self.ai_texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        # AI textures: pair of (1x1 black) placeholders so the shader has
+        # something valid to sample on cold start. Both default to black so
+        # the crossfade is invisible until real frames land.
+        self._ai_textures: list[moderngl.Texture] = [
+            self._fresh_ai_texture((1, 1)) for _ in range(2)
+        ]
+        for t in self._ai_textures:
+            t.write(b"\x00\x00\x00")
+        # `_cur_idx` points at the texture that holds the most recent
+        # frame; the other index is "prev".
+        self._cur_idx = 0
         self._last_ai_gen = 0
+        self._last_ai_upload_t: float | None = None
+        self._ai_period_s = self.DEFAULT_AI_PERIOD_S
+
+    def _fresh_ai_texture(self, size: tuple[int, int]) -> moderngl.Texture:
+        tex = self.ctx.texture(size, components=3, dtype="f1")
+        tex.repeat_x = False
+        tex.repeat_y = False
+        tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        return tex
 
     def offscreen_fbo(self, size: tuple[int, int]) -> moderngl.Framebuffer:
         """Return the offscreen FBO, recreating it if `size` changed."""
@@ -302,26 +333,63 @@ class Compositor:
         return self._fbo
 
     def maybe_upload_ai_frame(self, frame: AIFrame | None) -> bool:
-        """Upload `frame.image` to the AI texture if it's a new generation.
+        """Promote a fresh AIFrame onto the GPU.
 
-        Returns True iff we actually uploaded (caller can use this for
-        telemetry / logging). Texture upload at 512x512 RGB is ~1ms on
-        M3 Max so doing it once per fresh AI frame is fine.
+        Strategy: flip `_cur_idx` so what *was* current is now "prev"
+        (still holding the old bytes in its texture), then upload the
+        new image into the new "current" slot. No GPU→GPU copy needed.
+
+        Special case: on the very first upload there is no real "prev",
+        so we write the same bytes to *both* textures — that way the
+        first frame's crossfade is a no-op rather than fading from the
+        initial black placeholder.
+
+        Returns True iff we actually uploaded.
         """
         if frame is None or frame.image is None:
             return False
         if frame.gen_count == self._last_ai_gen:
             return False
         h, w = int(frame.image.shape[0]), int(frame.image.shape[1])
-        if (w, h) != self.ai_texture.size:
-            self.ai_texture.release()
-            self.ai_texture = self.ctx.texture((w, h), components=3, dtype="f1")
-            self.ai_texture.repeat_x = False
-            self.ai_texture.repeat_y = False
-            self.ai_texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        # numpy default layout for (H, W, 3) uint8 is C-contiguous; tobytes
-        # gives us tightly packed RGB the GL driver expects.
-        self.ai_texture.write(frame.image.tobytes())
+        is_first = self._last_ai_gen == 0
+        # Flip — the texture at the *new* _cur_idx is the one we'll write
+        # into. The texture at (1 - _cur_idx) keeps its previous bytes
+        # and becomes our "prev" sampler.
+        self._cur_idx = 1 - self._cur_idx
+        target = self._ai_textures[self._cur_idx]
+        if (w, h) != target.size:
+            target.release()
+            target = self._fresh_ai_texture((w, h))
+            self._ai_textures[self._cur_idx] = target
+        payload = frame.image.tobytes()
+        target.write(payload)
+        if is_first:
+            # Seed `prev` with the same bytes so frame #1 doesn't crossfade
+            # out of black. We may need to resize prev to match.
+            other = self._ai_textures[1 - self._cur_idx]
+            if (w, h) != other.size:
+                other.release()
+                other = self._fresh_ai_texture((w, h))
+                self._ai_textures[1 - self._cur_idx] = other
+            other.write(payload)
+
+        # Track timing for interpolation.
+        now = time.monotonic()
+        if self._last_ai_upload_t is not None:
+            observed = now - self._last_ai_upload_t
+            # Clamp the observation so a long pause (frozen prompt etc.)
+            # doesn't push the EMA off into stale territory.
+            observed = max(0.05, min(observed, 1.0))
+            self._ai_period_s = (
+                (1.0 - self.AI_PERIOD_EMA_ALPHA) * self._ai_period_s
+                + self.AI_PERIOD_EMA_ALPHA * observed
+            )
+        # As a fallback, latency_ms (when present) gives us a useful
+        # initial estimate for the very first frame — saves us a frame
+        # of "no interp because period unknown".
+        elif frame.latency_ms > 0:
+            self._ai_period_s = max(0.05, min(frame.latency_ms / 1000.0, 1.0))
+        self._last_ai_upload_t = now
         self._last_ai_gen = frame.gen_count
         return True
 
@@ -330,6 +398,10 @@ class Compositor:
         blend: float,
         saturation: float,
         has_ai: bool,
+        time_s: float = 0.0,
+        glitch: float = 0.0,
+        chromatic: float = 0.0,
+        kaleidoscope_segments: int = 1,
     ) -> None:
         """Draw the composite to the currently-bound framebuffer.
 
@@ -344,11 +416,25 @@ class Compositor:
         if self._shader_tex is None:
             return  # offscreen_fbo() never called; nothing to composite
         self._shader_tex.use(location=0)
-        self.ai_texture.use(location=1)
+        # `prev` lives at the *other* index from `_cur_idx`.
+        self._ai_textures[1 - self._cur_idx].use(location=1)
+        self._ai_textures[self._cur_idx].use(location=2)
+
+        # Compute crossfade factor from elapsed wallclock.
+        if self._last_ai_upload_t is None:
+            ai_interp = 1.0  # no AI yet → just show "current" (black anyway)
+        else:
+            elapsed = time.monotonic() - self._last_ai_upload_t
+            ai_interp = max(0.0, min(elapsed / max(self._ai_period_s, 1e-3), 1.0))
 
         _set_uniform(self.program, "u_blend", float(blend))
         _set_uniform(self.program, "u_saturation", float(saturation))
         _set_uniform(self.program, "u_has_ai", 1.0 if has_ai else 0.0)
+        _set_uniform(self.program, "u_ai_interp", float(ai_interp))
+        _set_uniform(self.program, "u_glitch", float(glitch))
+        _set_uniform(self.program, "u_chromatic", float(chromatic))
+        _set_uniform(self.program, "u_kaleidoscope_segments", int(kaleidoscope_segments))
+        _set_uniform(self.program, "u_time", float(time_s))
 
         self.vao.render(moderngl.TRIANGLE_STRIP)
 
@@ -435,24 +521,46 @@ class ApopheniaWindow(mglw.WindowConfig):
             # Phase-3 fast path: shaders go straight to the window.
             self.engine.render(features, render_time, self.window_size, state=state)
         else:
-            # Phase-6 path: shaders → offscreen FBO → composite with AI texture
-            # → window.
+            # Phase-6+ path: shaders → offscreen FBO → composite (with
+            # post-FX) → window.
             fbo = self.compositor.offscreen_fbo(self.window_size)
             fbo.use()
             self.ctx.viewport = (0, 0, *self.window_size)
             self.engine.render(features, render_time, self.window_size, state=state)
 
-            # Pull the latest AI frame and upload if it's a new generation.
+            # Pull the latest AI frame; the compositor decides whether
+            # there's anything new to upload.
             ai_frame = self._ai_bus_ref.latest() if self._ai_bus_ref is not None else None
             self.compositor.maybe_upload_ai_frame(ai_frame)
 
             # Switch back to the default framebuffer for the composite pass.
             self.ctx.screen.use()
             self.ctx.viewport = (0, 0, *self.window_size)
-            blend = state.blend.shader_ai if state is not None else 0.0
-            saturation = state.palette.saturation if state is not None else 1.0
+
+            # Pull all the post-FX uniforms from state (with neutral
+            # fallbacks when state is missing).
+            if state is not None:
+                blend = state.blend.shader_ai
+                saturation = state.palette.saturation
+                glitch = state.fx.glitch
+                chromatic = state.fx.chromatic
+                kaleidoscope = state.fx.kaleidoscope
+            else:
+                blend = 0.0
+                saturation = 1.0
+                glitch = 0.0
+                chromatic = 0.0
+                kaleidoscope = 1
             has_ai = ai_frame is not None
-            self.compositor.render(blend=blend, saturation=saturation, has_ai=has_ai)
+            self.compositor.render(
+                blend=blend,
+                saturation=saturation,
+                has_ai=has_ai,
+                time_s=time_s,
+                glitch=glitch,
+                chromatic=chromatic,
+                kaleidoscope_segments=kaleidoscope,
+            )
 
         self._frame_count += 1
         now = time.monotonic()
