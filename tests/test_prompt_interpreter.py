@@ -132,6 +132,36 @@ def test_smooth_clears_trail_too() -> None:
     assert r["partial"]["fx"]["chromatic"] == 0.0
 
 
+def test_camera_vocabulary_writes_camera_state() -> None:
+    """Phase-12 camera keywords drive `state.camera`."""
+    r = PromptInterpreter().interpret("close overhead vortex")
+    p = r["partial"]
+    # close → distance=2.5; overhead → elevation=70; vortex → orbit_speed=0.25
+    assert p["camera"]["distance"] == 2.5
+    assert p["camera"]["elevation"] == 70.0
+    assert p["camera"]["orbit_speed"] == 0.25
+    assert p["camera"]["autorotate"] is True
+
+
+def test_still_disables_autorotate() -> None:
+    r = PromptInterpreter().interpret("still")
+    assert r["partial"]["camera"]["autorotate"] is False
+
+
+def test_camera_vocabulary_validates_against_camera_state() -> None:
+    """Every camera-touching keyword's diff must validate against
+    CameraState — guards against vocabulary drifting out of the schema."""
+    from apophenia.prompt.interpreter import VOCABULARY
+    from apophenia.state import CameraState
+
+    for keyword, diff in VOCABULARY.items():
+        if "camera" not in diff:
+            continue
+        # Apply on top of defaults; if a value is out-of-range Pydantic raises.
+        merged = {**CameraState().model_dump(), **diff["camera"]}
+        CameraState.model_validate(merged), f"{keyword!r} produces invalid camera state"
+
+
 # ---- helper ---- #
 
 
