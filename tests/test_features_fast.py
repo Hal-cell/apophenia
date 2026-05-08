@@ -19,7 +19,6 @@ from apophenia.audio.features_fast import (
 )
 from apophenia.audio.mock import MockSource
 
-
 # --------------------------------------------------------------------------- #
 # compute_block_features
 # --------------------------------------------------------------------------- #

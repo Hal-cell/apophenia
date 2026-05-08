@@ -20,13 +20,14 @@ from rich.console import Console
 
 from apophenia.audio.features_fast import FeatureBus, fast_features_loop
 from apophenia.audio.features_slow import (
-    AudioBuffer,
     CLAP_WINDOW_SECONDS,
+    AudioBuffer,
     SlowBus,
     slow_features_loop,
 )
 from apophenia.audio.source import parse_source_arg
 from apophenia.control.server import make_app
+from apophenia.control.state_bus import StateBus
 
 app = typer.Typer(
     name="apophenia",
@@ -76,6 +77,7 @@ def run(
 
     src = parse_source_arg(source)
     bus = FeatureBus()
+    state_bus = StateBus()  # default VisualState; UI patches via /api/state
     stop_event = threading.Event()
 
     # Slow tier (CLAP). Optional via --no-clap; the AudioBuffer is the
@@ -107,11 +109,16 @@ def run(
     )
     audio_thread.start()
 
-    web_app = make_app(bus, slow_bus=slow_bus, broadcast_hz=broadcast_hz)
+    web_app = make_app(
+        bus,
+        slow_bus=slow_bus,
+        state_bus=state_bus,
+        broadcast_hz=broadcast_hz,
+    )
     url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia · phase 4 running[/bold green]")
+    console.print("[bold green]apophenia · phase 5 running[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
@@ -165,6 +172,7 @@ def run(
     # glfw, so headless installs don't pay the import cost on `--no-render`.
     try:
         import moderngl_window as mglw
+
         from apophenia.visuals.shader_engine import ApopheniaWindow
     except ImportError as e:
         console.print(
@@ -176,6 +184,7 @@ def run(
         return
 
     ApopheniaWindow.bus = bus
+    ApopheniaWindow.state_bus = state_bus
 
     # Bug workaround: moderngl_window's parse_args does
     # `args or sys.argv[1:]` (line 384, mglw 3.1.1), and an empty list
