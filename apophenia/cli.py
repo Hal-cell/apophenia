@@ -96,16 +96,34 @@ def run(
 
 @app.command()
 def devices() -> None:
-    """List Core Audio input devices visible to the system."""
+    """List Core Audio input devices visible to the system.
+
+    Devices we recognise as common multi-channel routes for apophenia
+    (ES-9, BlackHole, Pro Tools Audio Bridge, Loopback) get a ★ marker.
+    Pick any of them with `--source device:"<exact name>"`.
+    """
     from apophenia.audio.device import list_devices
 
-    names = list_devices()
-    if not names:
+    devs = list_devices()
+    if not devs:
         console.print("[red]no input devices found (or sounddevice unavailable).[/red]")
         raise typer.Exit(code=1)
     console.print("[bold]input devices:[/bold]")
-    for name in names:
-        console.print(f"  • {name}")
+    console.print(
+        "  [dim]idx   ch     sr        name[/dim]"
+    )
+    interesting = ("ES-9", "BlackHole", "Pro Tools Audio Bridge", "Loopback")
+    for d in devs:
+        is_multi = d["max_input_channels"] >= 14
+        marker = " ★" if any(s in d["name"] for s in interesting) and is_multi else ""
+        console.print(
+            f"  {d['index']:>3}  {d['max_input_channels']:>3}   "
+            f"{d['default_samplerate']:>6}Hz   {d['name']}{marker}"
+        )
+    console.print()
+    console.print(
+        "[dim]use:[/dim] [cyan]apophenia run --source device:\"<exact name>\"[/cyan]"
+    )
 
 
 @app.command()
