@@ -51,9 +51,7 @@ class StateBus:
 
     def __init__(self, initial: VisualState | None = None) -> None:
         self._lock = threading.Lock()
-        # Pydantic Field() defaults aren't seen by mypy without the plugin;
-        # all VisualState fields have defaults so this constructs cleanly.
-        self._state = initial if initial is not None else VisualState()  # type: ignore[call-arg]
+        self._state = initial if initial is not None else VisualState()
 
     def get(self) -> VisualState:
         """Return a snapshot of the current state."""

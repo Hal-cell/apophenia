@@ -34,7 +34,6 @@ import moderngl_window as mglw
 import numpy as np
 
 if TYPE_CHECKING:
-    from apophenia.ai.bus import AIBus, AIFrame
     from apophenia.audio.features_fast import FastFeatures, FeatureBus
     from apophenia.control.state_bus import StateBus
     from apophenia.state import VisualState
@@ -187,15 +186,25 @@ class ShaderEngine:
         cent_arr = features.centroid or []
         env_arr = features.onset_envelope or []
 
-        # Pull per-channel weights + palette hue offset out of the state.
-        # `state.palette.hue ∈ [0, 1]` is a hue rotation in turns; we
-        # add it as degrees so the shaders' u_hue uniform stays in [0, 360).
+        # Pull per-channel weights, palette hue offset, and motion params
+        # out of the state. Phase-10: `motion.speed` multiplies the time
+        # uniform CPU-side so individual shaders' time-based animations
+        # all slow/speed up uniformly without each shader needing its
+        # own knob. `mood.arousal` multiplies on top so the XY pad acts
+        # as a coarse override.
         if state is not None:
             channel_weights = list(state.channel_weight)
             hue_offset_deg = float(state.palette.hue) * 360.0
+            arousal_mul = 1.0 + float(state.mood.arousal) * 0.5
+            motion_time = time_s * float(state.motion.speed) * arousal_mul
+            density = float(state.motion.density)
+            onset_gain = float(state.motion.onset_sensitivity) * arousal_mul
         else:
             channel_weights = [1.0] * 14
             hue_offset_deg = 0.0
+            motion_time = time_s
+            density = 0.5
+            onset_gain = 1.0
 
         for layer in self.layers:
             ch = layer.channel
@@ -205,6 +214,7 @@ class ShaderEngine:
             rms = float(rms_arr[ch])
             cent = float(cent_arr[ch]) if ch < len(cent_arr) else 0.0
             env = float(env_arr[ch]) if ch < len(env_arr) else 0.0
+            env *= onset_gain  # motion.onset_sensitivity scales the per-channel envelope
             hue = centroid_to_hue(cent) + hue_offset_deg
             # Normalise into [0, 360) — shader hsv2rgb uses (hue/360)
             hue = hue % 360.0
@@ -213,7 +223,7 @@ class ShaderEngine:
             )
 
             program = self.programs[layer.preset]
-            _set_uniform(program, "u_time", time_s)
+            _set_uniform(program, "u_time", motion_time)
             _set_uniform(program, "u_resolution", resolution)
             _set_uniform(program, "u_rms", rms)
             _set_uniform(program, "u_centroid", cent)
@@ -221,6 +231,7 @@ class ShaderEngine:
             _set_uniform(program, "u_hue", hue)
             _set_uniform(program, "u_channel_weight", weight)
             _set_uniform(program, "u_channel", float(ch))
+            _set_uniform(program, "u_density", density)
 
             self.vaos[layer.preset].render(moderngl.TRIANGLE_STRIP)
 
@@ -247,41 +258,24 @@ def _set_uniform(program: moderngl.Program, name: str, value: object) -> None:
 
 
 class Compositor:
-    """Final-stage composite: shader FBO + AI textures + post-FX.
+    """Final-stage post-FX over the shader-engine FBO.
 
+    Phase-10 reshape: this used to also blend an SDXL-Turbo AI texture,
+    but the AI tier was repurposed (it now writes shader *parameters*
+    instead of producing image bytes), so the compositor is shader-only.
     Owns:
       * an offscreen colour FBO that ShaderEngine draws into instead of
         the window's default framebuffer
-      * **two** AI textures — `prev` and `current` — so the composite
-        shader can crossfade between successive SDXL gens (otherwise raw
-        cuts at 5–15 fps look like a slideshow)
-      * a fragment-shader Program (`composite.frag`) that runs the full
+      * a fragment-shader Program (`composite.frag`) that runs the
         kaleidoscope / glitch / chromatic / saturation chain
-
-    Time-interpolation between AI frames is driven by a monotonic clock
-    captured in `maybe_upload_ai_frame()`. Each render call recomputes
-    `ai_interp ∈ [0, 1]` from elapsed wallclock seconds divided by the
-    estimated AI period (smoothed from observed `latency_ms`).
 
     The offscreen FBO size follows the window — we recreate it lazily if
     it's queried with a new size. Window resize on mglw 3.x doesn't
     notify us, so this is the cheapest reliable approach.
-
-    AI-texture swap (no GPU-to-GPU copy): we hold two textures in a list
-    and flip an index each upload. The "current" texture is the one we
-    just wrote to; the "prev" one still holds whatever we wrote there
-    on the *previous* upload — exactly the predecessor frame.
     """
 
-    # Interpolation period default. SDXL-Turbo on M3 Max produces a frame
-    # every ~70–200ms; if `latency_ms` arrives in the AIFrame we adapt
-    # to it via an exponential moving average.
-    DEFAULT_AI_PERIOD_S = 0.2
-    AI_PERIOD_EMA_ALPHA = 0.3  # how aggressively to track latency changes
-
-    def __init__(self, ctx: moderngl.Context, ai_resolution: int = 512) -> None:
+    def __init__(self, ctx: moderngl.Context) -> None:
         self.ctx = ctx
-        self.ai_resolution = ai_resolution
 
         # Composite program (single fragment shader sharing quad.vert)
         vert_src = (SHADER_DIR / "quad.vert").read_text()
@@ -295,39 +289,13 @@ class Compositor:
         self.vbo = ctx.buffer(quad_vertices.tobytes())
         self.vao = ctx.simple_vertex_array(self.program, self.vbo, "in_pos")
 
-        # Bind sampler units explicitly so the fragment shader can `texture()`
-        # on `u_shader_tex` (unit 0), `u_ai_tex_prev` (unit 1) and
-        # `u_ai_tex_cur` (unit 2).
+        # The composite shader binds one sampler — the shader-engine FBO.
         _set_uniform(self.program, "u_shader_tex", 0)
-        _set_uniform(self.program, "u_ai_tex_prev", 1)
-        _set_uniform(self.program, "u_ai_tex_cur", 2)
 
         # Offscreen FBO + colour texture; lazily recreated on resize.
         self._fbo_size: tuple[int, int] = (0, 0)
         self._shader_tex: moderngl.Texture | None = None
         self._fbo: moderngl.Framebuffer | None = None
-
-        # AI textures: pair of (1x1 black) placeholders so the shader has
-        # something valid to sample on cold start. Both default to black so
-        # the crossfade is invisible until real frames land.
-        self._ai_textures: list[moderngl.Texture] = [
-            self._fresh_ai_texture((1, 1)) for _ in range(2)
-        ]
-        for t in self._ai_textures:
-            t.write(b"\x00\x00\x00")
-        # `_cur_idx` points at the texture that holds the most recent
-        # frame; the other index is "prev".
-        self._cur_idx = 0
-        self._last_ai_gen = 0
-        self._last_ai_upload_t: float | None = None
-        self._ai_period_s = self.DEFAULT_AI_PERIOD_S
-
-    def _fresh_ai_texture(self, size: tuple[int, int]) -> moderngl.Texture:
-        tex = self.ctx.texture(size, components=3, dtype="f1")
-        tex.repeat_x = False
-        tex.repeat_y = False
-        tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        return tex
 
     def offscreen_fbo(self, size: tuple[int, int]) -> moderngl.Framebuffer:
         """Return the offscreen FBO, recreating it if `size` changed."""
@@ -344,72 +312,9 @@ class Compositor:
             self._fbo_size = size
         return self._fbo
 
-    def maybe_upload_ai_frame(self, frame: AIFrame | None) -> bool:
-        """Promote a fresh AIFrame onto the GPU.
-
-        Strategy: flip `_cur_idx` so what *was* current is now "prev"
-        (still holding the old bytes in its texture), then upload the
-        new image into the new "current" slot. No GPU→GPU copy needed.
-
-        Special case: on the very first upload there is no real "prev",
-        so we write the same bytes to *both* textures — that way the
-        first frame's crossfade is a no-op rather than fading from the
-        initial black placeholder.
-
-        Returns True iff we actually uploaded.
-        """
-        if frame is None or frame.image is None:
-            return False
-        if frame.gen_count == self._last_ai_gen:
-            return False
-        h, w = int(frame.image.shape[0]), int(frame.image.shape[1])
-        is_first = self._last_ai_gen == 0
-        # Flip — the texture at the *new* _cur_idx is the one we'll write
-        # into. The texture at (1 - _cur_idx) keeps its previous bytes
-        # and becomes our "prev" sampler.
-        self._cur_idx = 1 - self._cur_idx
-        target = self._ai_textures[self._cur_idx]
-        if (w, h) != target.size:
-            target.release()
-            target = self._fresh_ai_texture((w, h))
-            self._ai_textures[self._cur_idx] = target
-        payload = frame.image.tobytes()
-        target.write(payload)
-        if is_first:
-            # Seed `prev` with the same bytes so frame #1 doesn't crossfade
-            # out of black. We may need to resize prev to match.
-            other = self._ai_textures[1 - self._cur_idx]
-            if (w, h) != other.size:
-                other.release()
-                other = self._fresh_ai_texture((w, h))
-                self._ai_textures[1 - self._cur_idx] = other
-            other.write(payload)
-
-        # Track timing for interpolation.
-        now = time.monotonic()
-        if self._last_ai_upload_t is not None:
-            observed = now - self._last_ai_upload_t
-            # Clamp the observation so a long pause (frozen prompt etc.)
-            # doesn't push the EMA off into stale territory.
-            observed = max(0.05, min(observed, 1.0))
-            self._ai_period_s = (
-                (1.0 - self.AI_PERIOD_EMA_ALPHA) * self._ai_period_s
-                + self.AI_PERIOD_EMA_ALPHA * observed
-            )
-        # As a fallback, latency_ms (when present) gives us a useful
-        # initial estimate for the very first frame — saves us a frame
-        # of "no interp because period unknown".
-        elif frame.latency_ms > 0:
-            self._ai_period_s = max(0.05, min(frame.latency_ms / 1000.0, 1.0))
-        self._last_ai_upload_t = now
-        self._last_ai_gen = frame.gen_count
-        return True
-
     def render(
         self,
-        blend: float,
-        saturation: float,
-        has_ai: bool,
+        saturation: float = 1.0,
         time_s: float = 0.0,
         glitch: float = 0.0,
         chromatic: float = 0.0,
@@ -428,21 +333,8 @@ class Compositor:
         if self._shader_tex is None:
             return  # offscreen_fbo() never called; nothing to composite
         self._shader_tex.use(location=0)
-        # `prev` lives at the *other* index from `_cur_idx`.
-        self._ai_textures[1 - self._cur_idx].use(location=1)
-        self._ai_textures[self._cur_idx].use(location=2)
 
-        # Compute crossfade factor from elapsed wallclock.
-        if self._last_ai_upload_t is None:
-            ai_interp = 1.0  # no AI yet → just show "current" (black anyway)
-        else:
-            elapsed = time.monotonic() - self._last_ai_upload_t
-            ai_interp = max(0.0, min(elapsed / max(self._ai_period_s, 1e-3), 1.0))
-
-        _set_uniform(self.program, "u_blend", float(blend))
         _set_uniform(self.program, "u_saturation", float(saturation))
-        _set_uniform(self.program, "u_has_ai", 1.0 if has_ai else 0.0)
-        _set_uniform(self.program, "u_ai_interp", float(ai_interp))
         _set_uniform(self.program, "u_glitch", float(glitch))
         _set_uniform(self.program, "u_chromatic", float(chromatic))
         _set_uniform(self.program, "u_kaleidoscope_segments", int(kaleidoscope_segments))
@@ -457,10 +349,10 @@ class Compositor:
 class ApopheniaWindow(mglw.WindowConfig):
     """Render window for live visuals.
 
-    Class attributes (`bus`, `state_bus`, `requested_size`) are set by
-    `cli.run` BEFORE `mglw.run_window_config(ApopheniaWindow, args=[])`
-    instantiates this. moderngl_window doesn't pass our config through
-    __init__, so we bridge via class state.
+    Class attributes (`bus`, `state_bus`) are set by `cli.run` BEFORE
+    `mglw.run_window_config(ApopheniaWindow, args=[])` instantiates this.
+    moderngl_window doesn't pass our config through __init__, so we
+    bridge via class state.
     """
 
     title = "apophenia"
@@ -474,7 +366,6 @@ class ApopheniaWindow(mglw.WindowConfig):
     # Set externally before the window launches.
     bus: FeatureBus | None = None
     state_bus: StateBus | None = None
-    ai_bus: AIBus | None = None
     fps_log_period_s: float = 5.0
 
     def __init__(self, **kwargs: object) -> None:
@@ -485,12 +376,13 @@ class ApopheniaWindow(mglw.WindowConfig):
             )
         self._bus_ref: FeatureBus = ApopheniaWindow.bus
         self._state_bus_ref: StateBus | None = ApopheniaWindow.state_bus
-        self._ai_bus_ref: AIBus | None = ApopheniaWindow.ai_bus
         self.engine = ShaderEngine(self.ctx)
-        # Compositor only spins up when AI is enabled; without it we keep
-        # the phase-3 fast path of drawing shaders straight to the window.
+        # Compositor runs whenever state is available so the kaleidoscope
+        # / glitch / chromatic / saturation post-FX work. Without state,
+        # we fall back to drawing shaders straight to the window — that
+        # path is also what the engine-only GL tests use.
         self.compositor: Compositor | None = (
-            Compositor(self.ctx) if self._ai_bus_ref is not None else None
+            Compositor(self.ctx) if self._state_bus_ref is not None else None
         )
         self._frame_count = 0
         self._fps_t0 = time.monotonic()
@@ -505,7 +397,7 @@ class ApopheniaWindow(mglw.WindowConfig):
             len(self.engine.layers),
             len(self.engine.programs),
             "" if self._state_bus_ref is None else " (state-driven)",
-            " + AI compositor" if self.compositor is not None else "",
+            " + post-FX compositor" if self.compositor is not None else "",
         )
 
     def on_render(self, time_s: float, frame_time: float) -> None:
@@ -518,8 +410,9 @@ class ApopheniaWindow(mglw.WindowConfig):
 
         if state is not None and state.transport.freeze:
             # Freeze: redraw the last captured features at the last captured
-            # time. Channel weights / palette hue can still change while
-            # frozen — those are read fresh from `state` each frame.
+            # time. Channel weights / palette hue / motion params can still
+            # change while frozen — those are read fresh from `state` each
+            # frame.
             features = self._frozen_features
             render_time = self._frozen_time
         else:
@@ -530,49 +423,31 @@ class ApopheniaWindow(mglw.WindowConfig):
             self._frozen_time = time_s
 
         if self.compositor is None:
-            # Phase-3 fast path: shaders go straight to the window.
+            # No state_bus → no post-FX → render shaders straight to the
+            # window (used by tests / headless GL benchmarks).
             self.engine.render(features, render_time, self.window_size, state=state)
         else:
-            # Phase-6+ path: shaders → offscreen FBO → composite (with
-            # post-FX) → window.
+            # Phase-10 path: shaders → offscreen FBO → composite post-FX →
+            # window.
             fbo = self.compositor.offscreen_fbo(self.window_size)
             fbo.use()
             self.ctx.viewport = (0, 0, *self.window_size)
             self.engine.render(features, render_time, self.window_size, state=state)
 
-            # Pull the latest AI frame; the compositor decides whether
-            # there's anything new to upload.
-            ai_frame = self._ai_bus_ref.latest() if self._ai_bus_ref is not None else None
-            self.compositor.maybe_upload_ai_frame(ai_frame)
-
             # Switch back to the default framebuffer for the composite pass.
             self.ctx.screen.use()
             self.ctx.viewport = (0, 0, *self.window_size)
 
-            # Pull all the post-FX uniforms from state (with neutral
-            # fallbacks when state is missing).
             if state is not None:
-                blend = state.blend.shader_ai
-                saturation = state.palette.saturation
-                glitch = state.fx.glitch
-                chromatic = state.fx.chromatic
-                kaleidoscope = state.fx.kaleidoscope
+                self.compositor.render(
+                    saturation=state.palette.saturation,
+                    time_s=time_s,
+                    glitch=state.fx.glitch,
+                    chromatic=state.fx.chromatic,
+                    kaleidoscope_segments=state.fx.kaleidoscope,
+                )
             else:
-                blend = 0.0
-                saturation = 1.0
-                glitch = 0.0
-                chromatic = 0.0
-                kaleidoscope = 1
-            has_ai = ai_frame is not None
-            self.compositor.render(
-                blend=blend,
-                saturation=saturation,
-                has_ai=has_ai,
-                time_s=time_s,
-                glitch=glitch,
-                chromatic=chromatic,
-                kaleidoscope_segments=kaleidoscope,
-            )
+                self.compositor.render()  # all-defaults pass-through
 
         self._frame_count += 1
         now = time.monotonic()
