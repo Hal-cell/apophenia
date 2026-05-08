@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import webbrowser
+from typing import TYPE_CHECKING
 
 import numpy as np
 import typer
@@ -28,6 +29,9 @@ from apophenia.audio.features_slow import (
 from apophenia.audio.source import parse_source_arg
 from apophenia.control.server import make_app
 from apophenia.control.state_bus import StateBus
+
+if TYPE_CHECKING:
+    from apophenia.ai.bus import AIBus
 
 app = typer.Typer(
     name="apophenia",
@@ -62,6 +66,19 @@ def run(
         True,
         "--clap/--no-clap",
         help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB. --no-clap skips it (no slow tier).",
+    ),
+    ai: bool = typer.Option(
+        False,
+        "--ai/--no-ai",
+        help="Run SDXL-Turbo image generation in the background. First call downloads ~5GB. Default off (heavy).",
+    ),
+    ai_resolution: int = typer.Option(
+        512, "--ai-resolution", help="SDXL-Turbo output side length in px (square)."
+    ),
+    ai_min_period_s: float = typer.Option(
+        0.0,
+        "--ai-min-period",
+        help="Floor on AI generation period in seconds. 0 = run as fast as the GPU allows.",
     ),
 ) -> None:
     """Run audio capture + meter web UI + (optionally) the render window.
@@ -109,16 +126,54 @@ def run(
     )
     audio_thread.start()
 
+    # AI tier (SDXL-Turbo). Optional via --ai; default off because the
+    # model is huge (~5GB) and busy users without an MPS / CUDA device
+    # don't want to spin up a CPU diffusion job by accident.
+    ai_bus: AIBus | None = None
+    ai_thread: threading.Thread | None = None
+    if ai:
+        # Lazy import keeps non-AI installs from paying the import tax.
+        from apophenia.ai.bus import AIBus
+        from apophenia.ai.loop import ai_loop
+        from apophenia.ai.sdxl_turbo import SDXLTurboGenerator
+
+        ai_bus = AIBus()
+        generator = SDXLTurboGenerator(resolution=ai_resolution)
+        # Loading SDXL is slow; do it on the AI thread so the CLI banner
+        # appears promptly. Renders fall back to the shader path until
+        # the first AI frame lands.
+        def _ai_worker() -> None:
+            try:
+                generator.load()
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).exception(
+                    "SDXL load failed; AI tier disabled for this session"
+                )
+                return
+            assert ai_bus is not None  # narrowed by the `if ai:` block above
+            ai_loop(
+                state_bus,
+                ai_bus,
+                stop_event,
+                generator,
+                slow_bus=slow_bus,
+                min_period_s=ai_min_period_s,
+            )
+
+        ai_thread = threading.Thread(target=_ai_worker, name="ai", daemon=True)
+        ai_thread.start()
+
     web_app = make_app(
         bus,
         slow_bus=slow_bus,
         state_bus=state_bus,
         broadcast_hz=broadcast_hz,
+        ai_bus=ai_bus,
     )
     url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia · phase 5 running[/bold green]")
+    console.print("[bold green]apophenia · phase 6 running[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
@@ -126,6 +181,10 @@ def run(
     console.print(f"  meter:   [cyan]{url}[/cyan]")
     console.print(f"  render:  {'[green]on[/green] (GLSL window)' if render else '[yellow]off[/yellow]'}")
     console.print(f"  clap:    {'[green]on[/green] (~1Hz)' if clap else '[yellow]off[/yellow]'}")
+    console.print(
+        f"  ai:      "
+        f"{'[green]on[/green] (SDXL-Turbo)' if ai else '[yellow]off[/yellow]'}"
+    )
     console.print("  ws hz:   30")
     console.print("  ctrl-c (terminal) or close window to stop")
     console.print()
@@ -142,6 +201,8 @@ def run(
             audio_thread.join(timeout=1.0)
             if slow_thread is not None:
                 slow_thread.join(timeout=2.0)
+            if ai_thread is not None:
+                ai_thread.join(timeout=2.0)
         return
 
     # --- render-on path (phase-3 default) ---
@@ -185,6 +246,7 @@ def run(
 
     ApopheniaWindow.bus = bus
     ApopheniaWindow.state_bus = state_bus
+    ApopheniaWindow.ai_bus = ai_bus
 
     # Bug workaround: moderngl_window's parse_args does
     # `args or sys.argv[1:]` (line 384, mglw 3.1.1), and an empty list
@@ -206,6 +268,8 @@ def run(
         audio_thread.join(timeout=1.0)
         if slow_thread is not None:
             slow_thread.join(timeout=2.0)
+        if ai_thread is not None:
+            ai_thread.join(timeout=2.0)
         server_thread.join(timeout=2.0)
 
 

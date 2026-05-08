@@ -45,6 +45,8 @@ def test_health_endpoint_no_data() -> None:
         "block_count": 0,
         "slow_active": False,
         "slow_updates": 0,
+        "ai_active": False,
+        "ai_gens": 0,
     }
 
 
@@ -58,6 +60,8 @@ def test_health_endpoint_with_data() -> None:
         "block_count": 42,
         "slow_active": False,
         "slow_updates": 0,
+        "ai_active": False,
+        "ai_gens": 0,
     }
 
 
@@ -271,3 +275,73 @@ def test_websocket_payload_includes_state() -> None:
         assert "state" in msg
         assert msg["state"]["text"]["prompt"] == "deep violet"
         assert msg["state"]["blend"]["audio_text"] == 0.7
+
+
+# --------------------------------------------------------------------------- #
+# AI tier (Phase 6)
+# --------------------------------------------------------------------------- #
+
+
+def test_health_reports_ai_inactive_by_default() -> None:
+    bus = _bus_with()
+    client = TestClient(make_app(bus))
+    body = client.get("/health").json()
+    assert body["ai_active"] is False
+    assert body["ai_gens"] == 0
+
+
+def test_health_reports_ai_active_when_bus_present() -> None:
+    import numpy as np
+
+    from apophenia.ai.bus import AIBus, AIFrame
+
+    bus = _bus_with()
+    ai_bus = AIBus()
+    ai_bus.publish(
+        AIFrame(image=np.zeros((4, 4, 3), dtype=np.uint8), gen_count=7, latency_ms=12.0)
+    )
+    client = TestClient(make_app(bus, ai_bus=ai_bus))
+    body = client.get("/health").json()
+    assert body["ai_active"] is True
+    assert body["ai_gens"] == 7
+
+
+def test_websocket_payload_includes_ai() -> None:
+    import numpy as np
+
+    from apophenia.ai.bus import AIBus, AIFrame
+
+    bus = _bus_with(
+        FastFeatures(rms=[0.05] * 14, block_count=1, n_channels=14)
+    )
+    ai_bus = AIBus()
+    ai_bus.publish(
+        AIFrame(
+            image=np.zeros((8, 8, 3), dtype=np.uint8),
+            prompt="test",
+            gen_count=3,
+            latency_ms=42.0,
+            seed=99,
+            model_name="stub",
+        )
+    )
+    client = TestClient(make_app(bus, ai_bus=ai_bus, broadcast_hz=120))
+    with client.websocket_connect("/ws") as ws:
+        msg = ws.receive_json()
+        assert "ai" in msg
+        assert msg["ai"]["gen_count"] == 3
+        assert msg["ai"]["prompt"] == "test"
+        assert msg["ai"]["latency_ms"] == 42.0
+        # Image bytes must NOT make it through — too big for the wire.
+        assert "image" not in msg["ai"]
+
+
+def test_websocket_payload_ai_null_when_disabled() -> None:
+    bus = _bus_with(
+        FastFeatures(rms=[0.05] * 14, block_count=1, n_channels=14)
+    )
+    client = TestClient(make_app(bus, broadcast_hz=120))
+    with client.websocket_connect("/ws") as ws:
+        msg = ws.receive_json()
+        assert "ai" in msg
+        assert msg["ai"] is None
