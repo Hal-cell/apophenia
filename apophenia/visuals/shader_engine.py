@@ -63,7 +63,14 @@ def centroid_to_hue(hz: float) -> float:
 
 # ---- Layer configuration ---- #
 
-PRESETS = ("vignette", "circle_pulse", "horizontal_line", "bars", "noise_sweep")
+# Phase 9 preset roster. Each shader is a self-contained fragment-only
+# preset using the shared uniform interface (see `shaders/*.frag`):
+#   flow    — domain-warped FBM noise field; organic mist
+#   prism   — rotating polygon SDF; hard-edged colour shards
+#   plasma  — slow-flowing FBM blob; lava-lamp pad texture
+#   shock   — concentric audio-shock waves; great on percussion
+#   lattice — animated voronoi cells; bioluminescent grid
+PRESETS = ("flow", "prism", "plasma", "shock", "lattice")
 
 
 @dataclass
@@ -77,27 +84,32 @@ class Layer:
     channel: int
 
 
-# Default 14-layer mapping.
-# Ch1-3: percussion-flavoured presets (kick = pulse, bass = line, lead = bars).
-# Ch4: pad-flavoured vignette.
-# Ch5-8: noise-sweep textures for percussion / FX channels.
-# Ch9-11: more circle pulses for FX bursts.
-# Ch12-14: vignettes for slow CV-style channels.
+# Default 14-layer mapping for phase 9. Each preset is reused 2-3×
+# across 14 channels so visually-similar layers don't pile on top of
+# each other.
+#
+# Ch1-3:   percussion-flavoured (kick / bass / lead) — punchy presets
+#          that read well on transients.
+# Ch4:     pad — smooth flowing surface for sustained tones.
+# Ch5-8:   percussion / FX channels — mix of organic (flow) and
+#          structural (lattice / shock) so different rhythms layer.
+# Ch9-11:  FX bursts — onset-reactive, expressive.
+# Ch12-14: slow CV / drones — quiet smooth presets that don't over-fire.
 DEFAULT_LAYERS: list[Layer] = [
-    Layer(preset="circle_pulse",   channel=0),
-    Layer(preset="horizontal_line", channel=1),
-    Layer(preset="bars",            channel=2),
-    Layer(preset="vignette",        channel=3),
-    Layer(preset="noise_sweep",     channel=4),
-    Layer(preset="noise_sweep",     channel=5),
-    Layer(preset="noise_sweep",     channel=6),
-    Layer(preset="noise_sweep",     channel=7),
-    Layer(preset="circle_pulse",    channel=8),
-    Layer(preset="circle_pulse",    channel=9),
-    Layer(preset="circle_pulse",    channel=10),
-    Layer(preset="vignette",        channel=11),
-    Layer(preset="vignette",        channel=12),
-    Layer(preset="vignette",        channel=13),
+    Layer(preset="shock",   channel=0),    # kick     → radial pulse
+    Layer(preset="prism",   channel=1),    # bass     → rotating polygon
+    Layer(preset="lattice", channel=2),    # lead     → voronoi grid
+    Layer(preset="plasma",  channel=3),    # pad      → smooth plasma
+    Layer(preset="flow",    channel=4),    # perc     → fbm mist
+    Layer(preset="flow",    channel=5),    # perc
+    Layer(preset="lattice", channel=6),    # perc
+    Layer(preset="shock",   channel=7),    # perc
+    Layer(preset="shock",   channel=8),    # FX
+    Layer(preset="prism",   channel=9),    # FX
+    Layer(preset="lattice", channel=10),   # FX
+    Layer(preset="plasma",  channel=11),   # CV / drone
+    Layer(preset="plasma",  channel=12),   # CV / drone
+    Layer(preset="flow",    channel=13),   # CV / drone
 ]
 
 
