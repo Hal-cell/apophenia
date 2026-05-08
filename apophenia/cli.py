@@ -19,6 +19,12 @@ import uvicorn
 from rich.console import Console
 
 from apophenia.audio.features_fast import FeatureBus, fast_features_loop
+from apophenia.audio.features_slow import (
+    AudioBuffer,
+    CLAP_WINDOW_SECONDS,
+    SlowBus,
+    slow_features_loop,
+)
 from apophenia.audio.source import parse_source_arg
 from apophenia.control.server import make_app
 
@@ -51,6 +57,11 @@ def run(
         "--render/--no-render",
         help="Open the GLSL render window. --no-render keeps just audio + meter web UI.",
     ),
+    clap: bool = typer.Option(
+        True,
+        "--clap/--no-clap",
+        help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB. --no-clap skips it (no slow tier).",
+    ),
 ) -> None:
     """Run audio capture + meter web UI + (optionally) the render window.
 
@@ -67,25 +78,47 @@ def run(
     bus = FeatureBus()
     stop_event = threading.Event()
 
+    # Slow tier (CLAP). Optional via --no-clap; the AudioBuffer is the
+    # bridge from fast loop to slow worker. Buffer holds ~2s so the
+    # slow worker can always read a fresh 1s window.
+    slow_bus: SlowBus | None = None
+    audio_buffer: AudioBuffer | None = None
+    slow_thread: threading.Thread | None = None
+    if clap:
+        slow_bus = SlowBus()
+        audio_buffer = AudioBuffer(
+            n_channels=src.n_channels,
+            sample_rate=src.sample_rate,
+            duration_s=CLAP_WINDOW_SECONDS * 2,
+        )
+        slow_thread = threading.Thread(
+            target=slow_features_loop,
+            args=(src, audio_buffer, slow_bus, stop_event),
+            name="audio_features_slow",
+            daemon=True,
+        )
+        slow_thread.start()
+
     audio_thread = threading.Thread(
         target=fast_features_loop,
-        args=(src, bus, stop_event),
+        args=(src, bus, stop_event, audio_buffer),
         name="audio_features_fast",
         daemon=True,
     )
     audio_thread.start()
 
-    web_app = make_app(bus, broadcast_hz=broadcast_hz)
+    web_app = make_app(bus, slow_bus=slow_bus, broadcast_hz=broadcast_hz)
     url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia · phase 3 running[/bold green]")
+    console.print("[bold green]apophenia · phase 4 running[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
     )
     console.print(f"  meter:   [cyan]{url}[/cyan]")
     console.print(f"  render:  {'[green]on[/green] (GLSL window)' if render else '[yellow]off[/yellow]'}")
+    console.print(f"  clap:    {'[green]on[/green] (~1Hz)' if clap else '[yellow]off[/yellow]'}")
     console.print("  ws hz:   30")
     console.print("  ctrl-c (terminal) or close window to stop")
     console.print()
@@ -100,6 +133,8 @@ def run(
         finally:
             stop_event.set()
             audio_thread.join(timeout=1.0)
+            if slow_thread is not None:
+                slow_thread.join(timeout=2.0)
         return
 
     # --- render-on path (phase-3 default) ---
@@ -160,6 +195,8 @@ def run(
         stop_event.set()
         server.should_exit = True
         audio_thread.join(timeout=1.0)
+        if slow_thread is not None:
+            slow_thread.join(timeout=2.0)
         server_thread.join(timeout=2.0)
 
 

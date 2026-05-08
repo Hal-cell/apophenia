@@ -50,13 +50,39 @@
 
   main {
     flex: 1; padding: 32px 24px;
-    display: flex; align-items: stretch; justify-content: center;
+    display: flex; flex-direction: column; align-items: center; gap: 24px;
   }
   .meters {
     display: grid;
     grid-template-columns: repeat(14, 1fr);
     gap: 8px;
-    width: 100%; max-width: 1200px; min-height: 400px;
+    width: 100%; max-width: 1200px; min-height: 320px;
+  }
+  #clap-section {
+    width: 100%; max-width: 1200px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+  }
+  .clap-header {
+    display: flex; justify-content: space-between;
+    font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  #clap-meta { color: var(--text); }
+  #clap-heat {
+    display: grid;
+    grid-template-columns: repeat(32, 1fr);
+    gap: 2px; height: 60px;
+  }
+  #clap-heat .clap-bar {
+    background: var(--bar-bg);
+    border-radius: 1px;
+    align-self: end;
+    transition: height 200ms ease-out, background 200ms ease-out;
+    min-height: 2px;
   }
   .channel {
     display: flex; flex-direction: column; align-items: stretch;
@@ -126,7 +152,7 @@
 </head>
 <body>
   <header>
-    <h1>apophenia <span class="dim">· phase 2 · level + centroid + onset</span></h1>
+    <h1>apophenia <span class="dim">· phase 4 · level + centroid + onset + clap</span></h1>
     <div id="status">
       <div class="field"><span class="label">ws:</span><span id="ws-state" class="value err">disconnected</span></div>
       <div class="field"><span class="label">source:</span><span id="src-name" class="value">—</span></div>
@@ -134,17 +160,26 @@
       <div class="field"><span class="label">block:</span><span id="src-block" class="value">—</span></div>
       <div class="field"><span class="label">blocks:</span><span id="src-count" class="value">0</span></div>
       <div class="field"><span class="label">ui fps:</span><span id="ui-fps" class="value">0</span></div>
+      <div class="field"><span class="label">clap:</span><span id="clap-state" class="value">off</span></div>
     </div>
   </header>
 
   <main>
     <div class="meters" id="meters"></div>
+    <section id="clap-section">
+      <div class="clap-header">
+        <span>clap embedding</span>
+        <span id="clap-meta">—</span>
+      </div>
+      <div id="clap-heat"></div>
+    </section>
   </main>
 
   <footer>
     <span>level: <code>20·log10(rms)</code> dBFS bar height</span>
     <span>colour: <code>HSL(centroid)</code> — orange = bass-y, blue = bright</span>
     <span>top flash: <code>onset envelope</code> per channel</span>
+    <span>clap: 512-dim audio embedding @ ~1Hz, downsampled to 32 bars</span>
   </footer>
 
 <script>
@@ -191,6 +226,21 @@
   const srcBlock = document.getElementById('src-block');
   const srcCount = document.getElementById('src-count');
   const uiFps = document.getElementById('ui-fps');
+  const clapState = document.getElementById('clap-state');
+  const clapMeta = document.getElementById('clap-meta');
+  const clapHeat = document.getElementById('clap-heat');
+
+  // Build 32 CLAP bars (downsampled view of the 512-dim embedding).
+  const CLAP_BARS = 32;
+  const clapCells = [];
+  for (let i = 0; i < CLAP_BARS; i++) {
+    const b = document.createElement('div');
+    b.className = 'clap-bar';
+    b.style.height = '2px';
+    clapHeat.appendChild(b);
+    clapCells.push(b);
+  }
+  let lastClapUpdate = 0;
 
   function setWsState(text, ok) {
     wsState.textContent = text;
@@ -272,6 +322,54 @@
       cell.value.textContent = rmsDb <= FLOOR_DB ? '–∞' : rmsDb.toFixed(0);
       cell.root.classList.toggle('silent', (rms[i] || 0) < 1e-5);
     }
+
+    renderClap(data.slow);
+  }
+
+  function renderClap(slow) {
+    if (!slow || !slow.clap_embedding || slow.clap_embedding.length === 0) {
+      // either CLAP is off (--no-clap) or hasn't fired its first run yet
+      if (slow === null || slow === undefined) {
+        clapState.textContent = 'off';
+        clapState.className = 'value';
+      } else {
+        clapState.textContent = 'warming up…';
+        clapState.className = 'value';
+      }
+      clapMeta.textContent = '—';
+      return;
+    }
+    clapState.textContent = 'active';
+    clapState.className = 'value ok';
+
+    // Downsample 512 → 32 by averaging absolute values within each bin.
+    const z = slow.clap_embedding;
+    const binSize = z.length / CLAP_BARS;
+    let maxBin = 0;
+    const bins = new Array(CLAP_BARS).fill(0);
+    for (let i = 0; i < CLAP_BARS; i++) {
+      let s = 0;
+      const start = Math.floor(i * binSize);
+      const end = Math.floor((i + 1) * binSize);
+      for (let j = start; j < end; j++) s += Math.abs(z[j]);
+      bins[i] = s / (end - start);
+      if (bins[i] > maxBin) maxBin = bins[i];
+    }
+    const scale = maxBin > 0 ? 1.0 / maxBin : 1.0;
+    for (let i = 0; i < CLAP_BARS; i++) {
+      const v = bins[i] * scale;
+      const cell = clapCells[i];
+      cell.style.height = (3 + v * 55) + 'px';
+      // hue across the 32 bins gives the bar a cool spectrum gradient
+      cell.style.background = `hsl(${30 + (i / CLAP_BARS) * 170}, 60%, ${20 + v * 40}%)`;
+    }
+
+    const ageMs = slow.update_count !== lastClapUpdate
+      ? slow.inference_ms.toFixed(0) + 'ms · ‖z‖=' + slow.embedding_norm.toFixed(2)
+      : clapMeta.textContent;
+    lastClapUpdate = slow.update_count;
+    clapMeta.textContent =
+      `update #${slow.update_count} · ${slow.inference_ms.toFixed(0)}ms · ‖z‖=${slow.embedding_norm.toFixed(2)} · ${slow.model_name.split('/').pop()}`;
   }
 
   let ws = null;

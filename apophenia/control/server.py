@@ -1,14 +1,17 @@
 """FastAPI server: localhost web UI + WebSocket fast-feature broadcast.
 
-Phase 1 surface:
+Phase 4 surface:
     GET  /            → static `web/index.html` (level-meter page)
-    GET  /static/*    → static assets (CSS, JS) — currently unused, page
-                        is self-contained, but mounted for future growth
-    WS   /ws          → JSON stream of FastFeatures at `broadcast_hz`
+    GET  /static/*    → static assets (CSS, JS) for future expansion
+    GET  /health      → JSON liveness probe; reflects bus state
+    WS   /ws          → JSON stream at `broadcast_hz`. Each message has
+                        the full FastFeatures dict, plus a "slow" field
+                        carrying the latest SlowFeatures snapshot if a
+                        SlowBus was provided (else null).
 
-Broadcast rate is decoupled from audio rate: audio publishes ~94Hz
-(48kHz / 512 samples), UI consumes 30Hz. Readers seeing only the
-latest snapshot in the bus is correct; UI doesn't need history.
+Broadcast rate is decoupled from feature production:
+    audio publishes ~94Hz fast and ~1Hz slow,
+    UI consumes 30Hz, attaching whatever slow snapshot is current.
 """
 
 from __future__ import annotations
@@ -21,11 +24,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from apophenia.audio.features_fast import FeatureBus
+from apophenia.audio.features_slow import SlowBus
 
 WEB_DIR = Path(__file__).parent / "web"
 
 
-def make_app(bus: FeatureBus, broadcast_hz: float = 30.0) -> FastAPI:
+def make_app(
+    bus: FeatureBus,
+    slow_bus: SlowBus | None = None,
+    broadcast_hz: float = 30.0,
+) -> FastAPI:
     """Construct the FastAPI app instance.
 
     Factory style (not module-level singleton) so tests can build an app
@@ -44,11 +52,14 @@ def make_app(bus: FeatureBus, broadcast_hz: float = 30.0) -> FastAPI:
     @app.get("/health")
     async def health() -> JSONResponse:
         latest = bus.latest()
+        slow = slow_bus.latest() if slow_bus else None
         return JSONResponse(
             {
                 "ok": True,
                 "has_data": latest is not None,
                 "block_count": latest.block_count if latest else 0,
+                "slow_active": slow_bus is not None,
+                "slow_updates": slow.update_count if slow else 0,
             }
         )
 
@@ -62,7 +73,13 @@ def make_app(bus: FeatureBus, broadcast_hz: float = 30.0) -> FastAPI:
             while True:
                 features = bus.latest()
                 if features is not None:
-                    await websocket.send_json(features.to_dict())
+                    payload = features.to_dict()
+                    if slow_bus is not None:
+                        slow = slow_bus.latest()
+                        payload["slow"] = slow.to_dict() if slow else None
+                    else:
+                        payload["slow"] = None
+                    await websocket.send_json(payload)
                 await asyncio.sleep(period)
         except WebSocketDisconnect:
             return
