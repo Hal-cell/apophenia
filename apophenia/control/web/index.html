@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apophenia · level meter</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #141414;
+    --border: #222;
+    --text: #c8c8c8;
+    --text-dim: #6a6a6a;
+    --accent: #fbf2d4;
+    --bar-bg: #1c1c1c;
+    --good: #5ac95a;
+    --warn: #d8c54e;
+    --hot: #d8624e;
+    --peak-line: #fbf2d4;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, ui-monospace, Menlo, Consolas, monospace;
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: baseline;
+    flex-wrap: wrap; gap: 12px;
+  }
+  h1 {
+    margin: 0; font-size: 13px; font-weight: 500;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 .dim { color: var(--text-dim); }
+  #status {
+    font-size: 11px; color: var(--text-dim);
+    display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  #status .field { display: flex; gap: 6px; }
+  #status .label { color: var(--text-dim); }
+  #status .value { color: var(--text); }
+  #status .ok { color: var(--good); }
+  #status .err { color: var(--hot); }
+
+  main {
+    flex: 1; padding: 32px 24px;
+    display: flex; align-items: stretch; justify-content: center;
+  }
+  .meters {
+    display: grid;
+    grid-template-columns: repeat(14, 1fr);
+    gap: 8px;
+    width: 100%; max-width: 1200px; min-height: 400px;
+  }
+  .channel {
+    display: flex; flex-direction: column; align-items: stretch;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    min-height: 100%;
+  }
+  .channel .label {
+    text-align: center; padding: 6px 0;
+    font-size: 10px; letter-spacing: 0.1em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+  .channel .meter {
+    flex: 1; position: relative;
+    background: var(--bar-bg);
+    overflow: hidden;
+  }
+  .channel .fill {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(to top, var(--good) 0%, var(--good) 60%, var(--warn) 80%, var(--hot) 100%);
+    transition: height 50ms linear;
+  }
+  .channel .peak {
+    position: absolute; left: 0; right: 0;
+    height: 1.5px; background: var(--peak-line);
+    transition: bottom 100ms linear;
+  }
+  .channel .value {
+    text-align: center; padding: 4px 0;
+    font-size: 9px; color: var(--text-dim);
+    border-top: 1px solid var(--border);
+  }
+  .channel.silent .label { color: var(--text-dim); opacity: 0.4; }
+  .channel.silent .meter { opacity: 0.4; }
+
+  footer {
+    padding: 8px 24px;
+    border-top: 1px solid var(--border);
+    font-size: 10px; color: var(--text-dim);
+    display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  footer code { color: var(--accent); font-family: inherit; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>apophenia <span class="dim">· phase 1 · level meter</span></h1>
+    <div id="status">
+      <div class="field"><span class="label">ws:</span><span id="ws-state" class="value err">disconnected</span></div>
+      <div class="field"><span class="label">source:</span><span id="src-name" class="value">—</span></div>
+      <div class="field"><span class="label">sr:</span><span id="src-sr" class="value">—</span></div>
+      <div class="field"><span class="label">block:</span><span id="src-block" class="value">—</span></div>
+      <div class="field"><span class="label">blocks:</span><span id="src-count" class="value">0</span></div>
+      <div class="field"><span class="label">ui fps:</span><span id="ui-fps" class="value">0</span></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="meters" id="meters"></div>
+  </main>
+
+  <footer>
+    <span>level: <code>20·log10(rms)</code> dBFS, displayed 0 = top, -60 = bottom</span>
+    <span>peak line decays slowly (300ms hold)</span>
+  </footer>
+
+<script>
+(() => {
+  const N = 14;
+  const FLOOR_DB = -60.0;   // anything quieter than this reads as 0% bar
+  const PEAK_HOLD_MS = 300;
+
+  // Build 14 channel cells
+  const meters = document.getElementById('meters');
+  const cells = [];
+  for (let i = 0; i < N; i++) {
+    const c = document.createElement('div');
+    c.className = 'channel';
+    c.innerHTML = `
+      <div class="label">ch${i + 1}</div>
+      <div class="meter">
+        <div class="fill"></div>
+        <div class="peak"></div>
+      </div>
+      <div class="value">–∞</div>`;
+    meters.appendChild(c);
+    cells.push({
+      root: c,
+      fill: c.querySelector('.fill'),
+      peak: c.querySelector('.peak'),
+      value: c.querySelector('.value'),
+      lastPeakDb: FLOOR_DB,
+      lastPeakAt: 0,
+    });
+  }
+
+  // Status fields
+  const wsState = document.getElementById('ws-state');
+  const srcName = document.getElementById('src-name');
+  const srcSr = document.getElementById('src-sr');
+  const srcBlock = document.getElementById('src-block');
+  const srcCount = document.getElementById('src-count');
+  const uiFps = document.getElementById('ui-fps');
+
+  function setWsState(text, ok) {
+    wsState.textContent = text;
+    wsState.className = 'value ' + (ok ? 'ok' : 'err');
+  }
+
+  // Linear → dB with floor
+  function ampToDb(a) {
+    if (a <= 0) return FLOOR_DB;
+    const db = 20 * Math.log10(a);
+    return db < FLOOR_DB ? FLOOR_DB : db;
+  }
+  // dB → 0..1 fraction for bar height
+  function dbToFrac(db) {
+    return Math.max(0, Math.min(1, (db - FLOOR_DB) / (0 - FLOOR_DB)));
+  }
+
+  let frameCount = 0;
+  let fpsT0 = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    const fps = (frameCount * 1000) / (now - fpsT0);
+    uiFps.textContent = fps.toFixed(0);
+    frameCount = 0; fpsT0 = now;
+  }, 1000);
+
+  function render(data) {
+    frameCount++;
+    if (data.source_name) srcName.textContent = data.source_name;
+    if (data.sample_rate) srcSr.textContent = data.sample_rate + 'Hz';
+    if (data.block_size) srcBlock.textContent = data.block_size;
+    if (data.block_count != null) srcCount.textContent = data.block_count;
+
+    const rms = data.rms || [];
+    const peak = data.peak || [];
+    const now = performance.now();
+
+    for (let i = 0; i < N; i++) {
+      const cell = cells[i];
+      const rmsDb = ampToDb(rms[i] || 0);
+      const peakDb = ampToDb(peak[i] || 0);
+
+      const rmsFrac = dbToFrac(rmsDb);
+      cell.fill.style.height = (rmsFrac * 100) + '%';
+
+      // Peak hold: track max db within hold window
+      if (peakDb > cell.lastPeakDb || (now - cell.lastPeakAt) > PEAK_HOLD_MS) {
+        cell.lastPeakDb = peakDb;
+        cell.lastPeakAt = now;
+      }
+      cell.peak.style.bottom = (dbToFrac(cell.lastPeakDb) * 100) + '%';
+
+      cell.value.textContent = rmsDb <= FLOOR_DB ? '–∞' : rmsDb.toFixed(0);
+      cell.root.classList.toggle('silent', (rms[i] || 0) < 1e-5);
+    }
+  }
+
+  // WebSocket with auto-reconnect
+  let ws = null;
+  let reconnectTimer = null;
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    setWsState('connecting…', false);
+
+    ws.onopen = () => setWsState('connected', true);
+    ws.onmessage = (ev) => {
+      try { render(JSON.parse(ev.data)); }
+      catch (e) { console.error('bad message', e); }
+    };
+    ws.onclose = () => {
+      setWsState('disconnected — retry in 1s', false);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 1000);
+    };
+    ws.onerror = () => {
+      setWsState('error', false);
+      try { ws.close(); } catch (_) {}
+    };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

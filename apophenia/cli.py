@@ -1,23 +1,25 @@
 """apophenia CLI entry point.
 
 Subcommands:
-    run         spin up the audio + control + render processes
+    run         spin up the audio capture thread + control web server
     devices     list available Core Audio input devices
     smoke       run the source for a few seconds and print frame stats
-
-In phase 0 only `devices` and `smoke` are wired. `run` lands in phase 1+
-once the level-meter UI exists.
 """
 
 from __future__ import annotations
 
+import threading
 import time
+import webbrowser
 
 import numpy as np
 import typer
+import uvicorn
 from rich.console import Console
 
-from apophenia.audio.source import AudioSource, parse_source_arg
+from apophenia.audio.features_fast import FeatureBus, fast_features_loop
+from apophenia.audio.source import parse_source_arg
+from apophenia.control.server import make_app
 
 app = typer.Typer(
     name="apophenia",
@@ -36,16 +38,60 @@ def run(
         "-s",
         help="Audio source spec: 'mock', 'mock:<pattern>', 'file:<path>', 'device:<name>'.",
     ),
+    port: int = typer.Option(8000, "--port", "-p", help="HTTP / WebSocket port."),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Don't auto-open the meter URL in your default browser."
+    ),
+    broadcast_hz: float = typer.Option(
+        30.0, "--broadcast-hz", help="WebSocket fast-feature broadcast rate."
+    ),
 ) -> None:
-    """Run the full audio + control + render pipeline.
+    """Run audio capture + level-meter web UI.
 
-    Phase 0 stub — currently just constructs the source and prints its
-    metadata. Real run-loop lands in phase 1.
+    Phase 1: pulls blocks from the chosen source, computes per-channel
+    RMS + peak in a worker thread, broadcasts the latest snapshot to any
+    WebSocket clients at `--broadcast-hz`. Visit the printed URL in a
+    browser to see 14 vertical level bars.
+
+    Audio engine and AI engine land in later phases — for now this is
+    just the audio-input verification step.
     """
     src = parse_source_arg(source)
-    console.print(f"[green]source resolved:[/green] {type(src).__name__}")
-    console.print(f"  channels={src.n_channels}  sr={src.sample_rate}  block={src.block_size}")
-    console.print("[yellow]run loop is a phase-1 stub. use `apophenia smoke` to test the source.[/yellow]")
+    bus = FeatureBus()
+    stop_event = threading.Event()
+
+    audio_thread = threading.Thread(
+        target=fast_features_loop,
+        args=(src, bus, stop_event),
+        name="audio_features_fast",
+        daemon=True,
+    )
+    audio_thread.start()
+
+    web_app = make_app(bus, broadcast_hz=broadcast_hz)
+    url = f"http://127.0.0.1:{port}"
+
+    console.print()
+    console.print("[bold green]apophenia · phase 1 running[/bold green]")
+    console.print(f"  source:  [cyan]{type(src).__name__}[/cyan]  ({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})")
+    console.print(f"  meter:   [cyan]{url}[/cyan]")
+    console.print("  ws hz:   30")
+    console.print("  ctrl-c to stop")
+    console.print()
+
+    if not no_browser:
+        # Open the browser slightly after server start so the page doesn't
+        # land on a connection-refused screen. uvicorn binds within ~50ms
+        # but we wait 250ms to be safe across machines.
+        threading.Timer(0.25, lambda: webbrowser.open(url)).start()
+
+    try:
+        uvicorn.run(web_app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    finally:
+        stop_event.set()
+        audio_thread.join(timeout=1.0)
+        if audio_thread.is_alive():
+            console.print("[yellow]warning: audio thread didn't shut down within 1s[/yellow]")
 
 
 @app.command()
