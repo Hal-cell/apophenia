@@ -32,7 +32,7 @@ import logging
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -117,13 +117,13 @@ class SlowBus:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._latest: Optional[SlowFeatures] = None
+        self._latest: SlowFeatures | None = None
 
     def publish(self, features: SlowFeatures) -> None:
         with self._lock:
             self._latest = features
 
-    def latest(self) -> Optional[SlowFeatures]:
+    def latest(self) -> SlowFeatures | None:
         with self._lock:
             return self._latest
 
@@ -304,7 +304,7 @@ class ClapEncoder:
 
 
 def slow_features_loop(
-    source: "AudioSource",
+    source: AudioSource,
     audio_buffer: AudioBuffer,
     bus: SlowBus,
     stop_event: threading.Event,

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Iterator
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -66,7 +66,7 @@ class DeviceSource:
         self.sample_rate = sample_rate
         self.block_size = block_size
         self._stream: Any | None = None
-        self._device_index: Optional[int] = None
+        self._device_index: int | None = None
         self._stop = False
 
     # ------------------------------------------------------------------ #

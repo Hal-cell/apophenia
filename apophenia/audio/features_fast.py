@@ -26,12 +26,10 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Optional
 
 import numpy as np
 
 from apophenia.audio.source import AudioSource
-
 
 # --------------------------------------------------------------------------- #
 # Tuning constants
@@ -98,13 +96,13 @@ class FeatureBus:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._latest: Optional[FastFeatures] = None
+        self._latest: FastFeatures | None = None
 
     def publish(self, features: FastFeatures) -> None:
         with self._lock:
             self._latest = features
 
-    def latest(self) -> Optional[FastFeatures]:
+    def latest(self) -> FastFeatures | None:
         with self._lock:
             return self._latest
 

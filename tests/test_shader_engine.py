@@ -14,8 +14,6 @@ sandboxed envs). On M3 Max it runs and is fast.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from apophenia.visuals.shader_engine import (
@@ -30,7 +28,6 @@ from apophenia.visuals.shader_engine import (
     ShaderEngine,
     centroid_to_hue,
 )
-
 
 # --------------------------------------------------------------------------- #
 # centroid_to_hue
@@ -146,7 +143,6 @@ def test_engine_render_produces_nonblack_output() -> None:
     multiplies to zero, or where the additive blend gets configured
     such that nothing shows up.
     """
-    import moderngl
 
     from apophenia.audio.features_fast import FastFeatures
 
@@ -176,5 +172,46 @@ def test_engine_render_produces_nonblack_output() -> None:
         raw = fbo.read(components=4, dtype="f1")
         # raw is bytes — count non-zero bytes.
         assert any(b > 0 for b in raw), "render produced an all-black framebuffer"
+    finally:
+        ctx.release()
+
+
+def test_engine_render_with_zero_channel_weights_is_black() -> None:
+    """When all channel weights are 0, every layer's u_channel_weight is
+    zero, so shaders multiply to nothing → frame is solid black.
+    """
+    from apophenia.audio.features_fast import FastFeatures
+    from apophenia.state import VisualState
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        engine = ShaderEngine(ctx)
+        size = (64, 64)
+        tex = ctx.texture(size, components=4, dtype="f1")
+        fbo = ctx.framebuffer(color_attachments=[tex])
+        fbo.use()
+        ctx.viewport = (0, 0, *size)
+
+        features = FastFeatures(
+            rms=[0.5] * 14,
+            peak=[0.5] * 14,
+            centroid=[1000.0] * 14,
+            onset_envelope=[0.8] * 14,
+            n_channels=14,
+        )
+        # Build a state with all channels muted.
+        state = VisualState(channel_weight=[0.0] * 14)
+        engine.render(features, time_s=1.0, resolution=size, state=state)
+
+        raw = fbo.read(components=4, dtype="f1")
+        # The clear sets RGB=0, A=255 (full alpha). With every layer
+        # multiplying by zero, RGB should remain zero.
+        # Read back as RGBA bytes; check RGB channels.
+        for i in range(0, len(raw), 4):
+            assert raw[i] == 0, f"R != 0 at pixel {i // 4}"
+            assert raw[i + 1] == 0, f"G != 0 at pixel {i // 4}"
+            assert raw[i + 2] == 0, f"B != 0 at pixel {i // 4}"
     finally:
         ctx.release()

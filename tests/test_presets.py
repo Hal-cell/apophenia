@@ -1,0 +1,165 @@
+"""Tests for the 16-slot preset bank: schema, save/recall, persistence."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from apophenia.control.presets import (
+    PRESET_BANK_SIZE,
+    PRESET_FORMAT_VERSION,
+    Preset,
+    PresetBank,
+    clear_slot,
+    load,
+    save,
+    save_slot,
+)
+from apophenia.state import VisualState
+
+# --------------------------------------------------------------------------- #
+# Schema
+# --------------------------------------------------------------------------- #
+
+
+def test_empty_preset_has_no_state() -> None:
+    p = Preset()
+    assert p.state is None
+    assert p.label == ""
+
+
+def test_preset_bank_defaults_to_16_empty_slots() -> None:
+    bank = PresetBank()
+    assert len(bank.presets) == PRESET_BANK_SIZE
+    assert bank.version == PRESET_FORMAT_VERSION
+    assert all(p.state is None for p in bank.presets)
+
+
+def test_preset_bank_pads_short_input() -> None:
+    """If someone hands us a 3-slot list, normalise to 16."""
+    bank = PresetBank(presets=[Preset(label="a"), Preset(label="b"), Preset(label="c")])
+    assert len(bank.presets) == PRESET_BANK_SIZE
+    # First three slots preserved.
+    assert bank.presets[0].label == "a"
+    assert bank.presets[1].label == "b"
+    assert bank.presets[2].label == "c"
+    # Rest are empty.
+    for p in bank.presets[3:]:
+        assert p.label == ""
+        assert p.state is None
+
+
+def test_preset_bank_truncates_long_input() -> None:
+    bank = PresetBank(presets=[Preset(label=f"p{i}") for i in range(20)])
+    assert len(bank.presets) == PRESET_BANK_SIZE
+    assert bank.presets[-1].label == f"p{PRESET_BANK_SIZE - 1}"
+
+
+# --------------------------------------------------------------------------- #
+# save_slot / clear_slot
+# --------------------------------------------------------------------------- #
+
+
+def test_save_slot_writes_state_into_chosen_index() -> None:
+    bank = PresetBank()
+    state = VisualState()
+    state.blend.audio_text = 0.7
+
+    new_bank = save_slot(bank, 3, state, label="cathedral")
+    assert new_bank.presets[3].label == "cathedral"
+    assert new_bank.presets[3].state is not None
+    assert new_bank.presets[3].state.blend.audio_text == 0.7
+    # Other slots untouched.
+    for i, p in enumerate(new_bank.presets):
+        if i != 3:
+            assert p.state is None
+    # Original bank unchanged (pure-functional).
+    assert bank.presets[3].state is None
+
+
+def test_save_slot_default_label() -> None:
+    bank = PresetBank()
+    new_bank = save_slot(bank, 5, VisualState())
+    assert new_bank.presets[5].label == "preset 6"
+
+
+def test_save_slot_rejects_out_of_range() -> None:
+    bank = PresetBank()
+    state = VisualState()
+    with pytest.raises(IndexError):
+        save_slot(bank, -1, state)
+    with pytest.raises(IndexError):
+        save_slot(bank, PRESET_BANK_SIZE, state)
+
+
+def test_clear_slot_resets_to_empty() -> None:
+    bank = PresetBank()
+    bank = save_slot(bank, 7, VisualState(), label="x")
+    assert bank.presets[7].state is not None
+    bank = clear_slot(bank, 7)
+    assert bank.presets[7].state is None
+    assert bank.presets[7].label == ""
+
+
+def test_clear_slot_rejects_out_of_range() -> None:
+    bank = PresetBank()
+    with pytest.raises(IndexError):
+        clear_slot(bank, PRESET_BANK_SIZE + 5)
+
+
+# --------------------------------------------------------------------------- #
+# Persistence (load / save)
+# --------------------------------------------------------------------------- #
+
+
+def test_load_returns_empty_bank_when_file_missing(tmp_path: Path) -> None:
+    p = tmp_path / "none.json"
+    bank = load(p)
+    assert isinstance(bank, PresetBank)
+    assert all(slot.state is None for slot in bank.presets)
+
+
+def test_save_then_load_roundtrip(tmp_path: Path) -> None:
+    p = tmp_path / "presets.json"
+    bank = PresetBank()
+    state = VisualState()
+    state.text.prompt = "deep violet ribbons"
+    state.blend.audio_text = 0.65
+    bank = save_slot(bank, 0, state, label="cathedral")
+    bank = save_slot(bank, 12, VisualState(), label="empty-but-saved")
+    save(bank, p)
+    assert p.exists()
+
+    loaded = load(p)
+    assert loaded.version == PRESET_FORMAT_VERSION
+    assert loaded.presets[0].label == "cathedral"
+    assert loaded.presets[0].state is not None
+    assert loaded.presets[0].state.text.prompt == "deep violet ribbons"
+    assert loaded.presets[0].state.blend.audio_text == 0.65
+    assert loaded.presets[12].label == "empty-but-saved"
+
+
+def test_save_creates_parent_directory(tmp_path: Path) -> None:
+    p = tmp_path / "a" / "b" / "c" / "presets.json"
+    save(PresetBank(), p)
+    assert p.exists()
+
+
+def test_load_corrupt_file_returns_empty_bank(tmp_path: Path) -> None:
+    """Garbage on disk shouldn't crash the app — silently start fresh."""
+    p = tmp_path / "corrupt.json"
+    p.write_text("{not valid json")
+    bank = load(p)
+    assert isinstance(bank, PresetBank)
+    assert all(slot.state is None for slot in bank.presets)
+
+
+def test_load_old_version_returns_empty_bank(tmp_path: Path) -> None:
+    """Forward-compat: future versions of apophenia bumping `version` will
+    refuse to load the V1 file, rather than coerce mismatched fields."""
+    p = tmp_path / "old.json"
+    p.write_text('{"version": 999, "presets": []}')
+    bank = load(p)
+    assert bank.version == PRESET_FORMAT_VERSION
+    assert all(slot.state is None for slot in bank.presets)

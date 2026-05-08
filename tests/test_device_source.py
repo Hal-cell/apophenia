@@ -13,9 +13,6 @@ sounddevice or PortAudio internals.
 
 from __future__ import annotations
 
-import sys
-from collections.abc import Iterator
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -30,7 +27,6 @@ from apophenia.audio.device import (
     _resolve_device_name,
     list_devices,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Mock sounddevice fixture
