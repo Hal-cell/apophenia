@@ -2,26 +2,29 @@
 
 // PARTICLE UPDATE — transform-feedback simulation step.
 //
-// Phase-14 force model (TD-cluster + Ikeda fluid look):
+// Phase-15 redesign:
+//   * Particles are PERSISTENT. No LIFETIME, no respawn, no dead
+//     pool. Every particle is always alive and on screen. This kills
+//     the "popping in/out" behaviour from earlier phases.
+//   * Forces sum over ALL 14 emitters per particle, not just the
+//     particle's home channel. Every individual particle is affected
+//     by every audio channel — louder channels exert stronger pulls
+//     + spin, silent ones contribute nothing. The home channel still
+//     exerts a baseline pull (`HOME_BIAS`) so particles don't
+//     wander forever when all channels go quiet.
+//   * Onset transients now KICK velocity outward instead of
+//     respawning particles. The onset envelope decays over ~30ms so
+//     the kick lasts a few frames and then forces resume normal,
+//     producing the classic transient-burst feel without any spawn
+//     / despawn.
+//   * `age` field is retained in the state layout (for ABI stability
+//     with the existing 8-float packing) but is now just "time since
+//     last onset kick on this particle's home channel" — used in
+//     render for transient-flash brightness modulation.
 //
-//   1. CURL-NOISE flow      — three offset 3D-value-noise samples form a
-//                             smoothly varying vector field. Particles
-//                             bend along organic flow lines.
-//   2. VORTEX               — tangential rotation around each particle's
-//                             emitter, axis = world Y. Onset boosts it
-//                             so transients spin the swarm.
-//   3. COHESION             — gentle pull toward the emitter. Keeps the
-//                             swarm clustered instead of scattering.
-//                             This is the "fluid cluster" lever.
-//   4. DRAG                 — quadratic-ish: drag scales with current
-//                             speed so high-velocity particles slow
-//                             quickly while low-velocity ones drift.
-//   5. SPEED CAP            — clamp |vel| ≤ max_speed for terminal
-//                             velocity / fluid feel.
-//
-// Phase-13 stuff retained: onset weighting in respawn (hits spawn
-// bursts even on near-silent channels); CLAP audio_norm boosts noise
-// strength; audio_intensity boosts noise strength.
+// State packing unchanged:
+//   pos_age = (pos.xyz, age)
+//   vel_seed = (vel.xyz, seed)
 
 uniform float u_dt;
 uniform float u_time;
@@ -29,23 +32,23 @@ uniform float u_density;          // emission strength (state.motion.density)
 uniform float u_speed_scale;      // velocity multiplier (state.motion.speed)
 uniform float u_onset_gain;       // onset envelope multiplier
 
-// Phase-14 force strengths (state.force.*).
 uniform float u_force_noise;
 uniform float u_force_vortex;
 uniform float u_force_cohesion;
 uniform float u_max_speed;
 
-uniform float u_audio_intensity;  // ∑ rms / 14, clamped — drives noise
-uniform float u_audio_norm;       // CLAP embedding norm (or 0 if --no-clap)
+uniform float u_audio_intensity;
+uniform float u_audio_norm;
 uniform float u_rms[14];
 uniform float u_onset[14];
 uniform float u_centroid[14];
 uniform float u_channel_weight[14];
 
 const int N_CHANNELS = 14;
-const float LIFETIME = 4.0;
-const float ACTIVITY_FLOOR = 0.02;
-const vec3  DEAD_POOL = vec3(0.0, -100.0, 0.0);
+const float HOME_BIAS = 1.2;       // home-channel pull (always on) — must
+                                   // dominate the secondary other-channel
+                                   // contributions to preserve cluster identity
+const float ONSET_THRESHOLD = 0.3; // onset envelope above this triggers kick
 
 in vec4 in_pos_age;
 in vec4 in_vel_seed;
@@ -58,10 +61,6 @@ float hash11(float p) {
     p *= p + 33.33;
     p *= p + p;
     return fract(p);
-}
-
-vec3 hash33(float p) {
-    return vec3(hash11(p), hash11(p + 17.3), hash11(p + 31.7));
 }
 
 float vnoise3(vec3 p) {
@@ -109,100 +108,130 @@ void main() {
 
     int my_channel = int(seed * float(N_CHANNELS));
     my_channel = clamp(my_channel, 0, N_CHANNELS - 1);
-
-    float my_rms = u_rms[my_channel];
     float my_onset = u_onset[my_channel] * u_onset_gain;
-    float my_weight = u_channel_weight[my_channel];
 
-    // Onset-dominant activity (phase 13 retained).
-    float activity = (my_rms + my_onset * 5.0) * my_weight;
-
+    // age = time since last hot onset on home channel; just a counter
+    // for the render shader's transient-flash modulation.
     age += u_dt;
+    if (my_onset > ONSET_THRESHOLD) {
+        age = 0.0;
+    }
 
-    if (age > LIFETIME) {
-        if (activity < ACTIVITY_FLOOR) {
-            // Channel silent → stay parked.
-            pos = DEAD_POOL;
-            vel = vec3(0.0);
-            age = LIFETIME;
-        } else {
-            float gate = hash11(seed * 1373.7 + u_time * 13.0);
-            float gate_thresh = 0.15 + u_density * 0.85 + my_onset * 0.4;
-            if (gate > gate_thresh) {
-                pos = DEAD_POOL;
-                vel = vec3(0.0);
-                age = LIFETIME;
-            } else {
-                vec3 emitter = emitter_pos(my_channel);
-                // Phase-14: spawn TIGHTLY around the emitter. Smaller
-                // jitter → particles cluster from birth rather than
-                // fanning out. Cohesion will keep them close as they
-                // age.
-                vec3 spawn_jitter = (hash33(seed * 941.3 + u_time) - 0.5) * 0.25;
-                pos = emitter + spawn_jitter;
-                // Initial velocity: small outward kick + some randomness,
-                // scaled by audio.
-                vec3 out_dir = normalize(pos - vec3(0.0));
-                vec3 dir_jitter = (hash33(seed * 19.7 + u_time * 3.1) - 0.5) * 1.2;
-                vec3 dir = normalize(out_dir + dir_jitter);
-                float speed = (0.3 + my_rms * 0.7 + my_onset * 1.4)
-                              * u_speed_scale;
-                vel = dir * speed;
-                age = 0.0;
-            }
+    // -------- Position update (semi-implicit Euler) -------- //
+    pos += vel * u_dt;
+
+    // -------- Forces -------- //
+    // Home emitter dominates: every particle has a strong, always-on
+    // pull + vortex toward its home channel's anchor (silent or not),
+    // which is what gives the visual its 14-cluster identity. Each of
+    // the OTHER 13 channels then contributes a small directional bias
+    // only when audibly active — that's the "every particle feels
+    // every channel" behaviour the user asked for, but tuned so a
+    // single loud channel pulls particles slightly toward it without
+    // dissolving the cluster structure entirely.
+
+    vec3 home_em   = emitter_pos(my_channel);
+    vec3 to_home   = home_em - pos;
+    float home_dist = length(to_home);
+    float home_dist_safe = max(home_dist, 0.4);
+
+    // Home cohesion: smoothstep so a particle right at the emitter
+    // isn't yanked. HOME_BIAS scales with home channel's activity so
+    // a loud home tightens the cluster.
+    float home_strength = HOME_BIAS
+                        + u_rms[my_channel] * u_channel_weight[my_channel] * 0.6;
+    vec3 cohesion_sum = (to_home / home_dist_safe)
+                      * home_strength
+                      * smoothstep(0.4, 4.0, home_dist);
+
+    // Home vortex: always-on rotation around the home anchor; onset
+    // spikes the spin.
+    vec3 home_rel = pos - home_em;
+    vec3 home_tan = cross(vec3(0.0, 1.0, 0.0), home_rel);
+    vec3 vortex_sum = home_tan
+                    * (1.0 + my_onset * 2.5)
+                    / (0.6 + home_dist);
+
+    // -------- Other channels' weak influence -------- //
+    // Each other-channel contributes a weak directional pull + a
+    // weak vortex bias when audibly active. Floor gates silent
+    // channels so they don't add noise. Constants are deliberately
+    // small (~0.25) so the home cluster survives even when many
+    // other channels go loud.
+    for (int i = 0; i < N_CHANNELS; i++) {
+        if (i == my_channel) continue;
+        float activity_i = (u_rms[i] + u_onset[i] * 1.5)
+                         * u_channel_weight[i];
+        if (activity_i < 0.05) continue;
+
+        vec3 ep    = emitter_pos(i);
+        vec3 to_em = ep - pos;
+        float dist = length(to_em);
+        float dist_safe = max(dist, 0.4);
+
+        // Weak attractive pull, scaled by audio activity. Distance
+        // falloff reaches max at dist=5 so close-by emitters pull
+        // more than far-side-of-the-ring ones.
+        float pull = activity_i
+                   * smoothstep(0.5, 5.0, dist)
+                   / dist_safe
+                   * 0.25;
+        cohesion_sum += to_em * pull;
+
+        // Weak vortex contribution around this emitter.
+        vec3 rel = pos - ep;
+        vec3 tan = cross(vec3(0.0, 1.0, 0.0), rel);
+        float vstr = activity_i / (0.6 + dist) * 0.3;
+        vortex_sum += tan * vstr;
+    }
+
+    // -------- Curl-noise field -------- //
+    float noise_str = u_force_noise
+                    * (0.6 + u_audio_intensity * 1.4 + u_audio_norm * 0.3);
+    vec3 noise_force = flow_field(pos, u_time) * noise_str;
+
+    // -------- Apply forces -------- //
+    vel += (cohesion_sum * u_force_cohesion * 1.4
+          + vortex_sum   * u_force_vortex
+          + noise_force) * u_dt;
+
+    // -------- Onset velocity kick on home channel -------- //
+    // Brief outward push when the home channel transients. Decays
+    // naturally because the onset envelope itself decays.
+    if (my_onset > ONSET_THRESHOLD) {
+        vec3 home_em = emitter_pos(my_channel);
+        vec3 out_dir = pos - home_em;
+        float ol = length(out_dir);
+        if (ol > 1e-3) {
+            vel += (out_dir / ol) * my_onset * u_speed_scale * 1.5 * u_dt;
         }
-    } else {
-        // Live integration with the multi-force model.
-        // Position update first (semi-implicit Euler).
-        pos += vel * u_dt;
+    }
 
-        vec3 emitter = emitter_pos(my_channel);
-        vec3 to_emitter = emitter - pos;
-        float emitter_dist = length(to_emitter);
+    // -------- Drag (quadratic-ish) -------- //
+    float speed = length(vel);
+    float drag = 0.985 - 0.06 * smoothstep(1.0, 4.0, speed);
+    vel *= drag;
 
-        // -------- 1. Curl-noise flow -------- //
-        // Strength bumped by audio energy + CLAP timbre.
-        float noise_str = u_force_noise
-                          * (0.6 + u_audio_intensity * 1.4 + u_audio_norm * 0.3);
-        vec3 noise_force = flow_field(pos, u_time) * noise_str;
+    // -------- Speed cap -------- //
+    speed = length(vel);
+    if (speed > u_max_speed) {
+        vel *= u_max_speed / speed;
+    }
 
-        // -------- 2. Vortex around emitter -------- //
-        // Tangential force in the XZ plane around the emitter. Onset
-        // dramatically boosts the spin so transients = whirlpool kicks.
-        // Strength tapers with distance so far-away particles aren't
-        // yanked back.
-        vec3 rel = pos - emitter;
-        vec3 tangent = cross(vec3(0.0, 1.0, 0.0), rel);
-        float vortex_falloff = 1.0 / (0.4 + emitter_dist);
-        vec3 vortex_force = tangent * (
-            u_force_vortex * vortex_falloff
-            * (1.0 + my_onset * 2.5)
-        );
+    // -------- Soft world bound -------- //
+    // Without this, particles can wander to infinity if all channels
+    // go silent and curl noise alone keeps pushing them. Pull anything
+    // beyond r=8 gently back toward the origin.
+    float r = length(pos);
+    if (r > 8.0) {
+        vel -= (pos / max(r, 0.01)) * (r - 8.0) * 0.6 * u_dt;
+    }
 
-        // -------- 3. Cohesion: pull toward emitter -------- //
-        // Use smoothstep so particles right next to the emitter aren't
-        // crushed into it (would just oscillate); only pulls particles
-        // that have drifted out beyond ~0.4 units.
-        float pull_str = u_force_cohesion
-                       * smoothstep(0.4, 3.0, emitter_dist)
-                       * my_weight;
-        vec3 cohesion_force = (emitter_dist > 1e-3
-            ? to_emitter / emitter_dist
-            : vec3(0.0)) * pull_str * 1.2;
-
-        // -------- Apply forces -------- //
-        vel += (noise_force + vortex_force + cohesion_force) * u_dt;
-
-        // -------- 4. Drag (quadratic-ish) -------- //
-        float speed = length(vel);
-        float drag = 0.985 - 0.06 * smoothstep(1.0, 4.0, speed);
-        vel *= drag;
-
-        // -------- 5. Speed cap -------- //
-        speed = length(vel);
-        if (speed > u_max_speed) {
-            vel *= u_max_speed / speed;
-        }
+    // u_density controls the "active fraction" — used to be a respawn
+    // gate; now it modulates max speed implicitly via a small velocity
+    // damping when density is low.
+    if (u_density < 0.5) {
+        vel *= mix(0.92, 1.0, u_density * 2.0);
     }
 
     v_pos_age = vec4(pos, age);

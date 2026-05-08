@@ -164,18 +164,50 @@ class ParticleEngine:
 
     @staticmethod
     def _initial_particle_data(n: int) -> np.ndarray:
-        """Build the starting buffer: every particle is `dead` (age >
-        LIFETIME) but assigned a stable channel via `seed`. The first
-        few audio frames will respawn them gradually as channels go
-        active."""
+        """Build the starting buffer: every particle is alive and
+        scattered in a sphere around its home emitter. Phase-15
+        change: no more dead pool; particles are always present in
+        the scene from t=0.
+
+        Layout: (n, 8) row-major float32; columns are
+        `[px, py, pz, age, vx, vy, vz, seed]`. `seed ∈ [0, 1)` maps
+        to a home channel via `int(seed * 14)`. The home channel's
+        emitter is at `(cos(angle)*1.6, sin(channel*0.91)*0.25,
+        sin(angle)*1.6)` matching the shader's `emitter_pos()`.
+        """
         rng = np.random.default_rng(seed=42)
-        # Layout: (n, 8) row-major float32; columns are
-        # [px, py, pz, age, vx, vy, vz, seed].
         data = np.zeros((n, 8), dtype=np.float32)
-        # All particles start in the dead pool until audio respawns them.
-        data[:, 1] = -100.0  # py = DEAD_POOL.y
-        data[:, 3] = 5.0      # age > LIFETIME (4.0)
-        data[:, 7] = rng.random(n).astype(np.float32)  # seed ∈ [0, 1)
+
+        seeds = rng.random(n).astype(np.float32)
+        channels = np.clip(np.floor(seeds * 14).astype(int), 0, 13)
+        angles = channels.astype(np.float32) / 14.0 * (2 * np.pi)
+
+        # Emitter ring positions (must match `emitter_pos()` in the
+        # update shader exactly).
+        ex = np.cos(angles) * 1.6
+        ez = np.sin(angles) * 1.6
+        ey = np.sin(channels.astype(np.float32) * 0.91) * 0.25
+
+        # Random offset in a sphere of radius ~0.9 around each emitter
+        # so particles start visibly distributed rather than piled up.
+        rand_xyz = (rng.random((n, 3)).astype(np.float32) - 0.5) * 1.8
+        # Squash Y a bit so the cluster is more disc-shaped than spherical
+        # — emitters live on the XZ ring so vertical spread should be
+        # subtler than radial spread.
+        rand_xyz[:, 1] *= 0.4
+
+        data[:, 0] = ex + rand_xyz[:, 0]
+        data[:, 1] = ey + rand_xyz[:, 1]
+        data[:, 2] = ez + rand_xyz[:, 2]
+        data[:, 3] = 0.0  # age — meaningless under phase-15 persistence
+
+        # Tiny random initial velocity so the first frames have a touch
+        # of motion before forces kick in.
+        rand_vel = (rng.random((n, 3)).astype(np.float32) - 0.5) * 0.3
+        data[:, 4] = rand_vel[:, 0]
+        data[:, 5] = rand_vel[:, 1] * 0.5
+        data[:, 6] = rand_vel[:, 2]
+        data[:, 7] = seeds
         return data
 
     # ------------------------------------------------------------------ #

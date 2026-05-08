@@ -130,9 +130,9 @@ def test_particle_engine_constructs_with_gl_context() -> None:
 
 
 def test_particle_engine_transform_pass_changes_state() -> None:
-    """Run one update step with audible RMS on a subset of channels;
-    the destination buffer's contents should differ from the initial
-    "all dead" pattern."""
+    """Phase-15: particles are persistent. Running an update pass should
+    move them (positions change) regardless of audio activity, since
+    forces always apply (curl noise, home cohesion, drag)."""
     ctx = _try_make_ctx()
     if ctx is None:
         pytest.skip("no GL context available")
@@ -142,7 +142,6 @@ def test_particle_engine_transform_pass_changes_state() -> None:
         from apophenia.visuals.particle_engine import ParticleEngine
 
         pe = ParticleEngine(ctx, n_particles=2000)
-        # Snapshot initial state (all in dead pool).
         before = np.frombuffer(pe._buffers[0].read(), dtype=np.float32).reshape(-1, 8)
 
         features = FastFeatures(
@@ -153,7 +152,6 @@ def test_particle_engine_transform_pass_changes_state() -> None:
             n_channels=14,
         )
         state = VisualState()
-        # Run 5 update cycles to give the respawn gate time to fire.
         for i in range(5):
             pe.update_and_render(
                 features=features,
@@ -163,24 +161,24 @@ def test_particle_engine_transform_pass_changes_state() -> None:
                 state=state,
             )
 
-        # Read whichever buffer is currently the "front" (what was just
-        # written by the last transform pass).
         after = np.frombuffer(
             pe._buffers[pe._read_idx].read(), dtype=np.float32
         ).reshape(-1, 8)
-        # Some particles should have escaped the dead pool (py = -100).
-        live_after = (after[:, 1] > -50.0).sum()
-        live_before = (before[:, 1] > -50.0).sum()
-        assert live_after > live_before, (
-            f"expected respawned particles; before={live_before}, after={live_after}"
+        # Positions should have changed for most particles.
+        moved = np.linalg.norm(after[:, 0:3] - before[:, 0:3], axis=1) > 0.01
+        assert moved.sum() > pe.n_particles * 0.5, (
+            f"expected positions to update under forces; only {moved.sum()} moved"
         )
     finally:
         ctx.release()
 
 
-def test_particle_engine_silent_audio_keeps_particles_dead() -> None:
-    """When all channels have RMS ≈ 0, the activity floor blocks respawn
-    and particles stay parked in the dead pool."""
+def test_silent_audio_keeps_particles_alive_at_emitters() -> None:
+    """Phase-15 reshape: with silent audio, particles still drift
+    gently (home-bias keeps pulling toward home emitters), but
+    NONE should end up in the legacy dead-pool zone (y < -50). All
+    particles are persistent and visible.
+    """
     ctx = _try_make_ctx()
     if ctx is None:
         pytest.skip("no GL context available")
@@ -199,7 +197,7 @@ def test_particle_engine_silent_audio_keeps_particles_dead() -> None:
             n_channels=14,
         )
         state = VisualState()
-        for i in range(10):
+        for i in range(20):
             pe.update_and_render(
                 features=silent,
                 time_s=i * 0.033,
@@ -211,10 +209,17 @@ def test_particle_engine_silent_audio_keeps_particles_dead() -> None:
         after = np.frombuffer(
             pe._buffers[pe._read_idx].read(), dtype=np.float32
         ).reshape(-1, 8)
-        # Almost every particle should still be in the dead pool.
-        live_after = (after[:, 1] > -50.0).sum()
-        assert live_after < pe.n_particles * 0.05, (
-            f"silent audio should keep particles dead; got {live_after} live"
+        # No particle should be in the legacy dead-pool region.
+        in_dead_pool = (after[:, 1] < -50.0).sum()
+        assert in_dead_pool == 0, (
+            f"phase-15 has no dead pool; found {in_dead_pool} particles "
+            f"with y < -50"
+        )
+        # And particles should be in a reasonable scene-radius range
+        # (within the 8-unit soft world bound + a margin).
+        radii = np.linalg.norm(after[:, 0:3], axis=1)
+        assert radii.max() < 10.0, (
+            f"particles should be bounded; max radius = {radii.max():.2f}"
         )
     finally:
         ctx.release()
@@ -263,15 +268,12 @@ def _run_n_steps(pe, features, state, n_steps=10, slow=None):
     ).reshape(-1, 8)
 
 
-def test_high_onset_spawns_more_particles_than_low_onset_same_rms() -> None:
-    """Phase-13 onset weighting boost: with RMS *below* the activity
-    floor, no spawns happen on a calm channel — but a high onset
-    pushes activity well above the floor (RMS + onset×5 in the
-    formula), so transients alone trigger respawn even on a quiet
-    sustained channel.
-
-    This is the core "transient explosion" promise: a percussive hit
-    against a near-silent background generates a visible burst.
+def test_onset_kicks_velocities_outward() -> None:
+    """Phase-15 reshape: onsets no longer respawn particles (they
+    can't, particles are persistent); they push particle velocities
+    outward from the home emitter. Compare two runs at identical
+    audio setup minus the onset envelope: high-onset run should have
+    measurably higher mean particle speed.
     """
     ctx = _try_make_ctx()
     if ctx is None:
@@ -282,41 +284,39 @@ def test_high_onset_spawns_more_particles_than_low_onset_same_rms() -> None:
         from apophenia.visuals.particle_engine import ParticleEngine
 
         state = VisualState()
+        # Disable global noise/vortex so the onset kick is the only
+        # major velocity contributor we care about.
+        state.force.noise = 0.0
+        state.force.vortex = 0.0
+        state.force.cohesion = 0.5
 
-        # RMS just below the 0.02 activity floor — without onset
-        # weighting, no spawns. Onset envelopes differ wildly.
-        low_onset = FastFeatures(
-            rms=[0.01] * 14,
-            peak=[0.02] * 14,
+        steady = FastFeatures(
+            rms=[0.3] * 14,
+            peak=[0.4] * 14,
             centroid=[1500.0] * 14,
             onset_envelope=[0.0] * 14,
             n_channels=14,
         )
-        high_onset = FastFeatures(
-            rms=[0.01] * 14,
-            peak=[0.02] * 14,
+        with_onsets = FastFeatures(
+            rms=[0.3] * 14,
+            peak=[0.4] * 14,
             centroid=[1500.0] * 14,
-            onset_envelope=[0.6] * 14,
+            onset_envelope=[0.8] * 14,
             n_channels=14,
         )
 
-        pe_low = ParticleEngine(ctx, n_particles=2000)
-        after_low = _run_n_steps(pe_low, low_onset, state, n_steps=10)
-        live_low = (after_low[:, 1] > -50.0).sum()
+        pe_steady = ParticleEngine(ctx, n_particles=2000)
+        after_steady = _run_n_steps(pe_steady, steady, state, n_steps=8)
+        speeds_steady = np.linalg.norm(after_steady[:, 4:7], axis=1)
 
-        pe_high = ParticleEngine(ctx, n_particles=2000)
-        after_high = _run_n_steps(pe_high, high_onset, state, n_steps=10)
-        live_high = (after_high[:, 1] > -50.0).sum()
+        pe_onset = ParticleEngine(ctx, n_particles=2000)
+        after_onset = _run_n_steps(pe_onset, with_onsets, state, n_steps=8)
+        speeds_onset = np.linalg.norm(after_onset[:, 4:7], axis=1)
 
-        # Calm channel: essentially zero spawns (only the initial
-        # buffer reads as "dead", and they stay there).
-        assert live_low < 100, (
-            f"calm channels should stay dormant; got {live_low} live"
-        )
-        # Hit channel: most particles should be live.
-        assert live_high > 500, (
-            f"onset transients should spawn many particles even at "
-            f"sub-floor RMS; got {live_high} live"
+        # Onset-driven kick should push mean speed up meaningfully.
+        assert speeds_onset.mean() > speeds_steady.mean() * 1.4, (
+            f"onset kick should raise mean speed; "
+            f"steady={speeds_steady.mean():.3f}, onset={speeds_onset.mean():.3f}"
         )
     finally:
         ctx.release()
@@ -454,13 +454,15 @@ def test_phase13_reactive_vocabulary() -> None:
 
 
 def test_high_cohesion_keeps_particles_closer_to_emitter() -> None:
-    """Phase-14 cohesion: with high cohesion + low noise, particles
-    stay in tight clusters around their emitters. With cohesion=0
-    + same-strength noise, they wander far further.
+    """Phase-15 reshape: cohesion now is HOME pull (always-on) +
+    weak directional bias from other channels. With high cohesion +
+    low noise, particles converge toward their home emitter; with
+    zero cohesion (forces nullified), they sit roughly where init
+    placed them but spread out via curl-noise + initial random
+    velocity.
 
-    We compare the mean distance of live particles from their
-    emitter ring (radius 1.6) for two runs that share all other
-    parameters.
+    Test: mean distance from each particle to its home emitter. High
+    cohesion → smaller mean distance.
     """
     ctx = _try_make_ctx()
     if ctx is None:
@@ -470,35 +472,33 @@ def test_high_cohesion_keeps_particles_closer_to_emitter() -> None:
         from apophenia.state import VisualState
         from apophenia.visuals.particle_engine import ParticleEngine
 
+        # Single channel active so the home-bias dominates without
+        # the centroid-attraction confound from all-channels-loud.
         features = FastFeatures(
-            rms=[0.4] * 14,
-            peak=[0.5] * 14,
+            rms=[0.6] + [0.0] * 13,
+            peak=[0.7] + [0.0] * 13,
             centroid=[1500.0] * 14,
-            onset_envelope=[0.2] * 14,
+            onset_envelope=[0.0] * 14,
             n_channels=14,
         )
 
-        # Tight cluster: high cohesion, low noise, low vortex.
         state_tight = VisualState()
-        state_tight.force.cohesion = 0.95
-        state_tight.force.noise = 0.1
-        state_tight.force.vortex = 0.1
+        state_tight.force.cohesion = 1.0
+        state_tight.force.noise = 0.0
+        state_tight.force.vortex = 0.0
         state_tight.force.max_speed = 1.0
 
-        # Loose: low cohesion, similar noise budget.
         state_loose = VisualState()
         state_loose.force.cohesion = 0.0
-        state_loose.force.noise = 0.6
-        state_loose.force.vortex = 0.1
+        state_loose.force.noise = 0.7
+        state_loose.force.vortex = 0.0
         state_loose.force.max_speed = 4.0
 
         pe_tight = ParticleEngine(ctx, n_particles=2000)
-        after_tight = _run_n_steps(pe_tight, features, state_tight, n_steps=40)
+        after_tight = _run_n_steps(pe_tight, features, state_tight, n_steps=60)
         pe_loose = ParticleEngine(ctx, n_particles=2000)
-        after_loose = _run_n_steps(pe_loose, features, state_loose, n_steps=40)
+        after_loose = _run_n_steps(pe_loose, features, state_loose, n_steps=60)
 
-        # For each live particle compute distance from its assigned
-        # emitter (deterministic via int(seed*14) → ring point).
         def mean_distance(buf):
             seeds = buf[:, 7]
             channels = np.clip(np.floor(seeds * 14).astype(int), 0, 13)
@@ -506,26 +506,16 @@ def test_high_cohesion_keeps_particles_closer_to_emitter() -> None:
             ex = np.cos(angles) * 1.6
             ez = np.sin(angles) * 1.6
             ey = np.sin(channels.astype(np.float32) * 0.91) * 0.25
-            live = buf[:, 1] > -50.0
-            if live.sum() == 0:
-                return None
-            dx = buf[live, 0] - ex[live]
-            dy = buf[live, 1] - ey[live]
-            dz = buf[live, 2] - ez[live]
+            dx = buf[:, 0] - ex
+            dy = buf[:, 1] - ey
+            dz = buf[:, 2] - ez
             return np.sqrt(dx * dx + dy * dy + dz * dz).mean()
 
         d_tight = mean_distance(after_tight)
         d_loose = mean_distance(after_loose)
-        assert d_tight is not None and d_loose is not None
-        # Tight cluster should sit much closer to the emitter ring.
         assert d_tight < d_loose, (
-            f"high cohesion should hold closer to emitter; "
+            f"high cohesion should hold closer to home emitter; "
             f"tight={d_tight:.3f}, loose={d_loose:.3f}"
-        )
-        # And specifically: tight cluster's mean radius should be small.
-        assert d_tight < 1.5, (
-            f"high cohesion should pull particles to emitter; "
-            f"got mean d={d_tight:.3f}"
         )
     finally:
         ctx.release()

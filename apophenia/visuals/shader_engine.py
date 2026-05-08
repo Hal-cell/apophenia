@@ -265,10 +265,29 @@ class ApopheniaWindow(mglw.WindowConfig):
             " + post-FX compositor" if self.compositor is not None else "",
         )
 
+    def _current_size(self) -> tuple[int, int]:
+        """Read the actual framebuffer pixel size from mglw each frame.
+
+        Phase-15 fix: previously we used the class attribute
+        `self.window_size` (initial requested size, e.g. 1920×1080) for
+        FBOs and viewports. After window resize or on HiDPI displays
+        where the buffer is 2× the logical size, that mismatched the
+        actual screen framebuffer — visual content ended up confined
+        to one corner. `self.wnd.buffer_size` is the actual pixel buffer
+        size and tracks resizes; using it everywhere keeps FBOs +
+        viewports aligned with the visible window.
+        """
+        try:
+            w, h = self.wnd.buffer_size
+        except Exception:  # noqa: BLE001 — fall back gracefully if attr missing
+            w, h = self.window_size
+        return (max(int(w), 1), max(int(h), 1))
+
     def on_render(self, time_s: float, frame_time: float) -> None:
         if frame_time > 0:
             self._fps_min = min(self._fps_min, 1.0 / frame_time)
 
+        size = self._current_size()
         state = self._state_bus_ref.get() if self._state_bus_ref is not None else None
 
         if state is not None and state.transport.freeze:
@@ -281,15 +300,15 @@ class ApopheniaWindow(mglw.WindowConfig):
             self._frozen_time = time_s
 
         if self.compositor is None or self.particle_engine is None:
-            # No state → no compositor → nothing to draw. Clear and return.
             self.ctx.clear(0.0, 0.0, 0.0, 1.0)
             return
 
         # Particle render → offscreen FBO. The compositor then post-FX's
-        # the result onto the screen.
-        fbo = self.compositor.offscreen_fbo(self.window_size)
+        # the result onto the screen. Both FBO and viewport use the
+        # *current* buffer size, so resizes flow through naturally.
+        fbo = self.compositor.offscreen_fbo(size)
         fbo.use()
-        self.ctx.viewport = (0, 0, *self.window_size)
+        self.ctx.viewport = (0, 0, *size)
         self.ctx.clear(0.0, 0.0, 0.0, 1.0)
 
         slow = self._slow_bus_ref.latest() if self._slow_bus_ref is not None else None
@@ -297,13 +316,13 @@ class ApopheniaWindow(mglw.WindowConfig):
             features=features,
             time_s=render_time,
             dt=max(frame_time, 1e-3),
-            resolution=self.window_size,
+            resolution=size,
             state=state,
             slow=slow,
         )
 
         self.ctx.screen.use()
-        self.ctx.viewport = (0, 0, *self.window_size)
+        self.ctx.viewport = (0, 0, *size)
 
         if state is not None:
             self.compositor.render(
