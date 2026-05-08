@@ -116,7 +116,9 @@ def test_engine_rejects_negative_channel() -> None:
         pytest.skip("no GL context available")
     try:
         with pytest.raises(ValueError, match="channel"):
-            ShaderEngine(ctx, layers=[Layer(preset="vignette", channel=-1)])
+            # Use a *valid* preset name so we exercise the channel-bounds
+            # check, not the unknown-preset check.
+            ShaderEngine(ctx, layers=[Layer(preset="flow", channel=-1)])
     finally:
         ctx.release()
 
@@ -316,6 +318,53 @@ def test_compositor_skips_redundant_ai_uploads() -> None:
         assert comp.maybe_upload_ai_frame(f1_again) is False
         assert comp.maybe_upload_ai_frame(f2) is True
         assert comp.maybe_upload_ai_frame(None) is False
+    finally:
+        ctx.release()
+
+
+@pytest.mark.parametrize("preset", PRESETS)
+def test_each_shader_renders_nonblack_when_driven(preset: str) -> None:
+    """Each phase-9 preset, fed audible RMS + a centroid + an onset
+    envelope, must produce visible output. Catches uniform-name
+    regressions and silent zero-multiplications.
+    """
+    import moderngl  # noqa: F401
+
+    from apophenia.audio.features_fast import FastFeatures
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        engine = ShaderEngine(ctx, layers=[Layer(preset=preset, channel=0)])
+        size = (128, 128)
+        tex = ctx.texture(size, components=4, dtype="f1")
+        fbo = ctx.framebuffer(color_attachments=[tex])
+        fbo.use()
+        ctx.viewport = (0, 0, *size)
+
+        features = FastFeatures(
+            rms=[0.6] + [0.0] * 13,
+            peak=[0.7] + [0.0] * 13,
+            centroid=[2000.0] + [0.0] * 13,
+            onset_envelope=[0.9] + [0.0] * 13,
+            n_channels=14,
+        )
+        engine.render(features, time_s=2.0, resolution=size)
+
+        raw = fbo.read(components=4, dtype="f1")
+        # Count pixels that have any non-trivial colour. Some of the
+        # presets are heavily falloff-masked so most of the screen will
+        # be near-black; we only need a meaningful patch to be lit.
+        bright_pixels = sum(
+            1 for i in range(0, len(raw), 4)
+            if raw[i] > 20 or raw[i + 1] > 20 or raw[i + 2] > 20
+        )
+        total = len(raw) // 4
+        assert bright_pixels > 50, (
+            f"{preset}: only {bright_pixels}/{total} bright pixels — "
+            f"shader may have a uniform / falloff bug"
+        )
     finally:
         ctx.release()
 
