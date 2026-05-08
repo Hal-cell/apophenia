@@ -1,13 +1,14 @@
 """apophenia CLI entry point.
 
 Subcommands:
-    run         spin up the audio capture thread + control web server
+    run         spin up the audio capture thread + uvicorn server + render window
     devices     list available Core Audio input devices
     smoke       run the source for a few seconds and print frame stats
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import webbrowser
@@ -45,17 +46,23 @@ def run(
     broadcast_hz: float = typer.Option(
         30.0, "--broadcast-hz", help="WebSocket fast-feature broadcast rate."
     ),
+    render: bool = typer.Option(
+        True,
+        "--render/--no-render",
+        help="Open the GLSL render window. --no-render keeps just audio + meter web UI.",
+    ),
 ) -> None:
-    """Run audio capture + level-meter web UI.
+    """Run audio capture + meter web UI + (optionally) the render window.
 
-    Phase 1: pulls blocks from the chosen source, computes per-channel
-    RMS + peak in a worker thread, broadcasts the latest snapshot to any
-    WebSocket clients at `--broadcast-hz`. Visit the printed URL in a
-    browser to see 14 vertical level bars.
+    Phase 3 default: audio thread + uvicorn (web meter) + GLSL render
+    window all run together. Render window owns the main thread (Cocoa
+    requires GUI on main); audio + uvicorn live in daemon threads.
 
-    Audio engine and AI engine land in later phases — for now this is
-    just the audio-input verification step.
+    `--no-render` keeps the phase-1 behaviour: server runs on the main
+    thread, no render window. Useful for headless dev or remote sessions.
     """
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
     src = parse_source_arg(source)
     bus = FeatureBus()
     stop_event = threading.Event()
@@ -72,26 +79,88 @@ def run(
     url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia · phase 2 running[/bold green]")
-    console.print(f"  source:  [cyan]{type(src).__name__}[/cyan]  ({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})")
+    console.print("[bold green]apophenia · phase 3 running[/bold green]")
+    console.print(
+        f"  source:  [cyan]{type(src).__name__}[/cyan]  "
+        f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
+    )
     console.print(f"  meter:   [cyan]{url}[/cyan]")
+    console.print(f"  render:  {'[green]on[/green] (GLSL window)' if render else '[yellow]off[/yellow]'}")
     console.print("  ws hz:   30")
-    console.print("  ctrl-c to stop")
+    console.print("  ctrl-c (terminal) or close window to stop")
     console.print()
 
     if not no_browser:
-        # Open the browser slightly after server start so the page doesn't
-        # land on a connection-refused screen. uvicorn binds within ~50ms
-        # but we wait 250ms to be safe across machines.
         threading.Timer(0.25, lambda: webbrowser.open(url)).start()
 
+    if not render:
+        # Phase-1 path: uvicorn on main thread, audio in background.
+        try:
+            uvicorn.run(web_app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+        finally:
+            stop_event.set()
+            audio_thread.join(timeout=1.0)
+        return
+
+    # --- render-on path (phase-3 default) ---
+    # Run uvicorn in a daemon thread so the main thread can host the GL window.
+    config = uvicorn.Config(
+        web_app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+
+    def _serve() -> None:
+        try:
+            server.run()
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("uvicorn died")
+
+    server_thread = threading.Thread(target=_serve, name="uvicorn", daemon=True)
+    server_thread.start()
+
+    # Wait briefly for uvicorn to bind so the meter is responsive when
+    # the user alt-tabs to the browser. 0.25s is plenty on macOS.
+    time.sleep(0.25)
+
+    # Import lazily — only the [visuals] extra ships moderngl-window /
+    # glfw, so headless installs don't pay the import cost on `--no-render`.
     try:
-        uvicorn.run(web_app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
-    finally:
+        import moderngl_window as mglw
+        from apophenia.visuals.shader_engine import ApopheniaWindow
+    except ImportError as e:
+        console.print(
+            f"[red]render requested but visuals extras aren't installed:[/red] {e}"
+        )
+        console.print("[yellow]install with:[/yellow] uv sync --extra visuals")
         stop_event.set()
+        server.should_exit = True
+        return
+
+    ApopheniaWindow.bus = bus
+
+    # Bug workaround: moderngl_window's parse_args does
+    # `args or sys.argv[1:]` (line 384, mglw 3.1.1), and an empty list
+    # is falsy in Python, so passing `args=[]` to ask mglw to use only
+    # WindowConfig defaults still ends up parsing user's CLI argv —
+    # which contains typer's `run --source ... --no-browser` flags and
+    # crashes argparse. Temporarily swap sys.argv to just the program
+    # name so the fallback also yields an empty list.
+    import sys
+
+    saved_argv = sys.argv[:]
+    sys.argv = sys.argv[:1]
+    try:
+        mglw.run_window_config(ApopheniaWindow, args=[])
+    finally:
+        sys.argv = saved_argv
+        stop_event.set()
+        server.should_exit = True
         audio_thread.join(timeout=1.0)
-        if audio_thread.is_alive():
-            console.print("[yellow]warning: audio thread didn't shut down within 1s[/yellow]")
+        server_thread.join(timeout=2.0)
 
 
 @app.command()
@@ -109,9 +178,7 @@ def devices() -> None:
         console.print("[red]no input devices found (or sounddevice unavailable).[/red]")
         raise typer.Exit(code=1)
     console.print("[bold]input devices:[/bold]")
-    console.print(
-        "  [dim]idx   ch     sr        name[/dim]"
-    )
+    console.print("  [dim]idx   ch     sr        name[/dim]")
     interesting = ("ES-9", "BlackHole", "Pro Tools Audio Bridge", "Loopback")
     for d in devs:
         is_multi = d["max_input_channels"] >= 14
@@ -131,12 +198,7 @@ def smoke(
     source: str = typer.Option("mock:drums", "--source", "-s"),
     seconds: float = typer.Option(3.0, "--seconds", "-t"),
 ) -> None:
-    """Pull frames from a source for N seconds and print per-channel RMS.
-
-    Quick-and-dirty sanity check the source is producing real data at
-    real-time pace. Phase 0 ships this so we can verify Mock works
-    end-to-end before any feature extraction lands.
-    """
+    """Pull frames from a source for N seconds and print per-channel RMS."""
     src = parse_source_arg(source)
     src.open()
     try:
@@ -165,7 +227,6 @@ def smoke(
         for ch in range(src.n_channels):
             r = rms_avg[ch]
             p = peak[ch]
-            # Quick visual bar (RMS scale, max 0.5 → full bar of 30 chars).
             bar_len = int(min(r / 0.5, 1.0) * 30)
             bar = "█" * bar_len + "·" * (30 - bar_len)
             console.print(f"  {ch + 1:>2}  {r:6.4f}  {p:5.3f}  {bar}")
