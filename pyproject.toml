@@ -1,6 +1,6 @@
 [project]
 name = "apophenia"
-version = "0.0.0"
+version = "1.0.0"
 description = "Multi-channel audio-reactive AV instrument with AI visual generation"
 authors = [{ name = "Hal Xu" }]
 license = { text = "MIT" }
