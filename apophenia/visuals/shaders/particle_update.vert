@@ -2,38 +2,49 @@
 
 // PARTICLE UPDATE — transform-feedback simulation step.
 //
-// Phase-13 changes:
-//   * Replaced the cheap Y-axis swirl with a 3D flow-field force —
-//     three offset noise samples form a smoothly-varying vector field.
-//     Particles bend along curves instead of streaming radially.
-//   * Onset weighting in the respawn formula is now multiplicative
-//     (~6× over RMS) so transients dominate; a sharp hit produces a
-//     visible explosive burst at the channel's emitter, distinct from
-//     the slow drip of RMS-only flow.
-//   * `u_audio_intensity` (sum of RMS, normalised) modulates flow-field
-//     magnitude — louder mixes = harder turbulence.
-//   * `u_audio_norm` is the CLAP embedding norm, also scales the
-//     field; gives slow timbre changes a long-arc effect on motion.
+// Phase-14 force model (TD-cluster + Ikeda fluid look):
 //
-// Per-particle state stays packed as:
-//   pos_age = (pos.xyz, age)
-//   vel_seed = (vel.xyz, seed)
+//   1. CURL-NOISE flow      — three offset 3D-value-noise samples form a
+//                             smoothly varying vector field. Particles
+//                             bend along organic flow lines.
+//   2. VORTEX               — tangential rotation around each particle's
+//                             emitter, axis = world Y. Onset boosts it
+//                             so transients spin the swarm.
+//   3. COHESION             — gentle pull toward the emitter. Keeps the
+//                             swarm clustered instead of scattering.
+//                             This is the "fluid cluster" lever.
+//   4. DRAG                 — quadratic-ish: drag scales with current
+//                             speed so high-velocity particles slow
+//                             quickly while low-velocity ones drift.
+//   5. SPEED CAP            — clamp |vel| ≤ max_speed for terminal
+//                             velocity / fluid feel.
+//
+// Phase-13 stuff retained: onset weighting in respawn (hits spawn
+// bursts even on near-silent channels); CLAP audio_norm boosts noise
+// strength; audio_intensity boosts noise strength.
 
 uniform float u_dt;
 uniform float u_time;
-uniform float u_density;        // emission strength (state.motion.density)
-uniform float u_speed_scale;    // velocity multiplier (state.motion.speed)
-uniform float u_onset_gain;     // onset envelope multiplier
-uniform float u_audio_intensity; // ∑ rms / 14, clamped — drives flow strength
-uniform float u_audio_norm;     // CLAP embedding norm (or 0 if --no-clap)
+uniform float u_density;          // emission strength (state.motion.density)
+uniform float u_speed_scale;      // velocity multiplier (state.motion.speed)
+uniform float u_onset_gain;       // onset envelope multiplier
+
+// Phase-14 force strengths (state.force.*).
+uniform float u_force_noise;
+uniform float u_force_vortex;
+uniform float u_force_cohesion;
+uniform float u_max_speed;
+
+uniform float u_audio_intensity;  // ∑ rms / 14, clamped — drives noise
+uniform float u_audio_norm;       // CLAP embedding norm (or 0 if --no-clap)
 uniform float u_rms[14];
 uniform float u_onset[14];
 uniform float u_centroid[14];
 uniform float u_channel_weight[14];
 
 const int N_CHANNELS = 14;
-const float LIFETIME = 4.0;        // seconds; particles cycle on this period
-const float ACTIVITY_FLOOR = 0.02; // below this RMS+onset, channel is silent
+const float LIFETIME = 4.0;
+const float ACTIVITY_FLOOR = 0.02;
 const vec3  DEAD_POOL = vec3(0.0, -100.0, 0.0);
 
 in vec4 in_pos_age;
@@ -53,7 +64,6 @@ vec3 hash33(float p) {
     return vec3(hash11(p), hash11(p + 17.3), hash11(p + 31.7));
 }
 
-// 3D value noise: 8-corner trilinear interp of hashed lattice values.
 float vnoise3(vec3 p) {
     vec3 i = floor(p);
     vec3 f = fract(p);
@@ -73,19 +83,14 @@ float vnoise3(vec3 p) {
     );
 }
 
-// Cheap pseudo-curl flow field — three offset noise samples form a
-// smoothly varying 3D vector field. Not strictly divergence-free
-// (real curl noise needs ~18 samples for the gradient of a vector
-// potential), but visually does the same job: particles follow
-// organic flow lines instead of straight radial drift.
 vec3 flow_field(vec3 p, float t) {
-    float s = 0.45;  // spatial scale — coarser noise = larger eddies
-    float ts = 0.18; // temporal scale — slower → gentler weather
+    float s = 0.45;
+    float ts = 0.18;
     return vec3(
-        vnoise3(p * s + vec3(t * ts,  0.0,         0.0))  - 0.5,
-        vnoise3(p * s + vec3(13.0,    17.0,        t * ts * 1.3)) - 0.5,
-        vnoise3(p * s + vec3(7.0,     23.0 + t*ts, 31.0)) - 0.5
-    ) * 2.0; // remap [0, 1] → [-1, 1]
+        vnoise3(p * s + vec3(t * ts,        0.0,         0.0))         - 0.5,
+        vnoise3(p * s + vec3(13.0,          17.0,        t * ts * 1.3)) - 0.5,
+        vnoise3(p * s + vec3(7.0,           23.0 + t*ts, 31.0))         - 0.5
+    ) * 2.0;
 }
 
 vec3 emitter_pos(int channel) {
@@ -109,55 +114,95 @@ void main() {
     float my_onset = u_onset[my_channel] * u_onset_gain;
     float my_weight = u_channel_weight[my_channel];
 
-    // Onset-dominant activity: a transient hit (onset_envelope ≈ 1.0)
-    // contributes ~6× more to activity than steady RMS, so percussive
-    // events spawn visibly explosive bursts.
+    // Onset-dominant activity (phase 13 retained).
     float activity = (my_rms + my_onset * 5.0) * my_weight;
 
     age += u_dt;
 
     if (age > LIFETIME) {
         if (activity < ACTIVITY_FLOOR) {
+            // Channel silent → stay parked.
             pos = DEAD_POOL;
             vel = vec3(0.0);
             age = LIFETIME;
         } else {
-            // Density gates respawn probability. Onset events also push
-            // the gate threshold up — guarantees a fast spawn rate
-            // immediately after a transient.
             float gate = hash11(seed * 1373.7 + u_time * 13.0);
-            float gate_thresh = 0.15 + u_density * 0.85
-                              + my_onset * 0.4;  // boost on hits
+            float gate_thresh = 0.15 + u_density * 0.85 + my_onset * 0.4;
             if (gate > gate_thresh) {
                 pos = DEAD_POOL;
                 vel = vec3(0.0);
                 age = LIFETIME;
             } else {
-                pos = emitter_pos(my_channel);
-                vec3 out_dir = normalize(pos);
-                vec3 jitter = (hash33(seed * 941.3 + u_time) - 0.5) * 0.6;
-                vec3 dir = normalize(out_dir + jitter);
-                // Initial speed scales with audio energy — onsets give
-                // the particle a noticeably bigger initial kick.
-                float speed = (0.5 + my_rms * 1.2 + my_onset * 3.0)
+                vec3 emitter = emitter_pos(my_channel);
+                // Phase-14: spawn TIGHTLY around the emitter. Smaller
+                // jitter → particles cluster from birth rather than
+                // fanning out. Cohesion will keep them close as they
+                // age.
+                vec3 spawn_jitter = (hash33(seed * 941.3 + u_time) - 0.5) * 0.25;
+                pos = emitter + spawn_jitter;
+                // Initial velocity: small outward kick + some randomness,
+                // scaled by audio.
+                vec3 out_dir = normalize(pos - vec3(0.0));
+                vec3 dir_jitter = (hash33(seed * 19.7 + u_time * 3.1) - 0.5) * 1.2;
+                vec3 dir = normalize(out_dir + dir_jitter);
+                float speed = (0.3 + my_rms * 0.7 + my_onset * 1.4)
                               * u_speed_scale;
                 vel = dir * speed;
                 age = 0.0;
             }
         }
     } else {
-        // Live integration with flow-field force.
+        // Live integration with the multi-force model.
+        // Position update first (semi-implicit Euler).
         pos += vel * u_dt;
-        // Drag.
-        vel *= 0.985;
-        // Mild gravity.
-        vel.y -= 0.4 * u_dt;
-        // 3D flow-field force. Strength scales with overall mix
-        // intensity + CLAP embedding norm, so loud / timbrally rich
-        // mixes drive harder turbulence than steady drones.
-        vec3 force = flow_field(pos, u_time);
-        float strength = 0.6 + u_audio_intensity * 1.4 + u_audio_norm * 0.3;
-        vel += force * strength * u_dt;
+
+        vec3 emitter = emitter_pos(my_channel);
+        vec3 to_emitter = emitter - pos;
+        float emitter_dist = length(to_emitter);
+
+        // -------- 1. Curl-noise flow -------- //
+        // Strength bumped by audio energy + CLAP timbre.
+        float noise_str = u_force_noise
+                          * (0.6 + u_audio_intensity * 1.4 + u_audio_norm * 0.3);
+        vec3 noise_force = flow_field(pos, u_time) * noise_str;
+
+        // -------- 2. Vortex around emitter -------- //
+        // Tangential force in the XZ plane around the emitter. Onset
+        // dramatically boosts the spin so transients = whirlpool kicks.
+        // Strength tapers with distance so far-away particles aren't
+        // yanked back.
+        vec3 rel = pos - emitter;
+        vec3 tangent = cross(vec3(0.0, 1.0, 0.0), rel);
+        float vortex_falloff = 1.0 / (0.4 + emitter_dist);
+        vec3 vortex_force = tangent * (
+            u_force_vortex * vortex_falloff
+            * (1.0 + my_onset * 2.5)
+        );
+
+        // -------- 3. Cohesion: pull toward emitter -------- //
+        // Use smoothstep so particles right next to the emitter aren't
+        // crushed into it (would just oscillate); only pulls particles
+        // that have drifted out beyond ~0.4 units.
+        float pull_str = u_force_cohesion
+                       * smoothstep(0.4, 3.0, emitter_dist)
+                       * my_weight;
+        vec3 cohesion_force = (emitter_dist > 1e-3
+            ? to_emitter / emitter_dist
+            : vec3(0.0)) * pull_str * 1.2;
+
+        // -------- Apply forces -------- //
+        vel += (noise_force + vortex_force + cohesion_force) * u_dt;
+
+        // -------- 4. Drag (quadratic-ish) -------- //
+        float speed = length(vel);
+        float drag = 0.985 - 0.06 * smoothstep(1.0, 4.0, speed);
+        vel *= drag;
+
+        // -------- 5. Speed cap -------- //
+        speed = length(vel);
+        if (speed > u_max_speed) {
+            vel *= u_max_speed / speed;
+        }
     }
 
     v_pos_age = vec4(pos, age);

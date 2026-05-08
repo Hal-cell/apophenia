@@ -233,6 +233,10 @@ class ParticleEngine:
                        * (1.0 + 0.5 * float(state.mood.arousal)),
             audio_intensity=audio_intensity,
             audio_norm=audio_norm,
+            force_noise=float(state.force.noise),
+            force_vortex=float(state.force.vortex),
+            force_cohesion=float(state.force.cohesion),
+            max_speed=float(state.force.max_speed),
         )
 
         write_idx = 1 - self._read_idx
@@ -318,6 +322,10 @@ class ParticleEngine:
         onset_gain: float,
         audio_intensity: float,
         audio_norm: float,
+        force_noise: float,
+        force_vortex: float,
+        force_cohesion: float,
+        max_speed: float,
     ) -> None:
         prog = self.update_program
         _set(prog, "u_dt", float(dt))
@@ -327,7 +335,12 @@ class ParticleEngine:
         _set(prog, "u_onset_gain", onset_gain)
         _set(prog, "u_audio_intensity", float(audio_intensity))
         _set(prog, "u_audio_norm", float(audio_norm))
-        # Array uniforms: moderngl accepts a tuple of floats.
+        # Phase-14 forces.
+        _set(prog, "u_force_noise", force_noise)
+        _set(prog, "u_force_vortex", force_vortex)
+        _set(prog, "u_force_cohesion", force_cohesion)
+        _set(prog, "u_max_speed", max_speed)
+        # Array uniforms.
         _set_array(prog, "u_rms", rms)
         _set_array(prog, "u_onset", onset)
         _set_array(prog, "u_centroid", centroid)

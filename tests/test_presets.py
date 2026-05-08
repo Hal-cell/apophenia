@@ -210,13 +210,14 @@ def test_load_does_not_override_existing_user_file(tmp_path: Path) -> None:
 
 def test_load_starter_includes_known_presets(tmp_path: Path) -> None:
     """Spot-check a couple of starter labels so we'll notice if the bank
-    silently goes empty (e.g., import order regression)."""
+    silently goes empty (e.g., import order regression). Phase-14
+    starter bank is force-cluster themed."""
     p = tmp_path / "presets.json"
     bank = load(p)
     labels = {pr.label for pr in bank.presets if pr.state is not None}
-    assert "bloom" in labels
-    assert "cathedral" in labels
-    assert "neon_city" in labels
+    assert "ikeda" in labels
+    assert "fluid" in labels
+    assert "tornado" in labels
 
 
 def test_starter_bank_validates_against_schema() -> None:

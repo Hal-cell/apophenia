@@ -26,10 +26,13 @@ def test_single_known_keyword() -> None:
 
 def test_keyword_composition_deep_merges() -> None:
     """Two tokens that touch different motion sub-fields should merge,
-    not clobber each other."""
+    not clobber each other. (`dense` also writes `force.cohesion` —
+    that's the phase-14 cluster lever — but the motion subtree merge
+    is what we're checking here.)"""
     r = PromptInterpreter().interpret("slow dense")
     assert set(r["matched"]) == {"slow", "dense"}
-    assert r["partial"] == {"motion": {"speed": 0.4, "density": 0.85}}
+    assert r["partial"]["motion"]["speed"] == 0.4
+    assert r["partial"]["motion"]["density"] == 0.85
 
 
 def test_keyword_composition_across_groups() -> None:

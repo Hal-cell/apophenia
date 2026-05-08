@@ -74,8 +74,12 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     # ---- Motion: density / texture ---- #
     "sparse":    {"motion": {"density": 0.15}},
     "thin":      {"motion": {"density": 0.2}},
-    "dense":     {"motion": {"density": 0.85}},
-    "thick":     {"motion": {"density": 0.8}},
+    # `dense` writes both motion.density and force.cohesion — phase-14
+    # made these conceptually paired (more particles + held tighter).
+    "dense":     {"motion": {"density": 0.85},
+                  "force": {"cohesion": 0.75}},
+    "thick":     {"motion": {"density": 0.8},
+                  "force": {"cohesion": 0.7}},
     "fine":      {"motion": {"density": 0.75}},
     "chunky":    {"motion": {"density": 0.25}},
     "coarse":    {"motion": {"density": 0.3}},
@@ -187,6 +191,50 @@ VOCABULARY: dict[str, dict[str, Any]] = {
                    "motion": {"speed": 1.5, "onset_sensitivity": 1.7}},
     "anchored":   {"mood": {"arousal": -0.5},
                    "camera": {"autorotate": False}},
+
+    # ---- Particle force / cluster shaping (phase 14) ---- #
+    # These tune the four force levers — noise / vortex / cohesion /
+    # max_speed — toward common aesthetic targets.
+    "cluster":    {"force": {"cohesion": 0.85, "vortex": 0.5, "noise": 0.3}},
+    "cohesive":   {"force": {"cohesion": 0.85, "vortex": 0.4}},
+    "tight":      {"force": {"cohesion": 0.9, "max_speed": 1.4}},
+    "fluid":      {"force": {"noise": 0.7, "vortex": 0.3, "cohesion": 0.55,
+                             "max_speed": 1.8}},
+    "flowing":    {"force": {"noise": 0.75, "vortex": 0.25, "cohesion": 0.5}},
+    "liquid":     {"force": {"noise": 0.75, "vortex": 0.4, "cohesion": 0.6,
+                             "max_speed": 1.6}},
+    "chaotic":    {"force": {"noise": 0.95, "vortex": 0.7, "cohesion": 0.2,
+                             "max_speed": 4.0},
+                   "mood": {"arousal": 0.7}},
+    "turbulent":  {"force": {"noise": 0.9, "vortex": 0.6, "cohesion": 0.3,
+                             "max_speed": 3.5}},
+    "stormy":     {"force": {"noise": 0.95, "vortex": 0.55, "max_speed": 4.0},
+                   "mood": {"arousal": 0.8}},
+    "tornado":    {"force": {"vortex": 0.95, "cohesion": 0.65, "noise": 0.4,
+                             "max_speed": 3.0}},
+    "whirlpool":  {"force": {"vortex": 0.9, "cohesion": 0.7, "noise": 0.3}},
+    "cyclone":    {"force": {"vortex": 0.85, "cohesion": 0.6, "noise": 0.5,
+                             "max_speed": 3.2}},
+    # Aesthetic shorthand.
+    "data":       {"force": {"cohesion": 0.7, "vortex": 0.2, "noise": 0.3,
+                             "max_speed": 1.2},
+                   "palette": {"saturation": 0.25},
+                   "motion": {"density": 0.9}},
+    "ikeda":      {"force": {"cohesion": 0.75, "vortex": 0.15, "noise": 0.25,
+                             "max_speed": 1.0},
+                   "palette": {"saturation": 0.15},
+                   "motion": {"density": 0.95}},
+    "digital":    {"force": {"cohesion": 0.7, "vortex": 0.3, "noise": 0.4},
+                   "palette": {"saturation": 0.4}},
+    "minimal":    {"force": {"cohesion": 0.65, "vortex": 0.2, "noise": 0.3},
+                   "palette": {"saturation": 0.4}},
+    # Anti-cluster: scattering / dispersion.
+    "dispersed":  {"force": {"cohesion": 0.05, "vortex": 0.15, "noise": 0.7,
+                             "max_speed": 4.0}},
+    "scattered":  {"force": {"cohesion": 0.0, "noise": 0.6, "vortex": 0.2}},
+    "exploding":  {"force": {"cohesion": 0.0, "vortex": 0.1, "noise": 0.4,
+                             "max_speed": 5.0},
+                   "motion": {"onset_sensitivity": 1.7}},
 
     # ---- Behaviour primitives ---- #
     "bloom":     {"motion": {"speed": 0.7, "density": 0.6,

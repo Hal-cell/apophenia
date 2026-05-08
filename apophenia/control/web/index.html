@@ -554,6 +554,33 @@
       </section>
     </div>
 
+    <!-- Forces (phase 14) — the levers shaping the particle cluster -->
+    <div class="row">
+      <section class="panel" style="width: 100%;">
+        <h2><span class="accent">force</span> · noise · vortex · cohesion · speed cap</h2>
+        <div class="ctrl-row">
+          <span class="ctrl-label">noise</span>
+          <input type="range" id="force-noise" min="0" max="1" step="0.01" value="0.5">
+          <span class="ctrl-value" id="force-noise-v">0.50</span>
+        </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">vortex</span>
+          <input type="range" id="force-vortex" min="0" max="1" step="0.01" value="0.4">
+          <span class="ctrl-value" id="force-vortex-v">0.40</span>
+        </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">cohesion</span>
+          <input type="range" id="force-cohesion" min="0" max="1" step="0.01" value="0.5">
+          <span class="ctrl-value" id="force-cohesion-v">0.50</span>
+        </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">max speed</span>
+          <input type="range" id="force-max_speed" min="0.5" max="8" step="0.1" value="2.0">
+          <span class="ctrl-value" id="force-max_speed-v">2.0</span>
+        </div>
+      </section>
+    </div>
+
     <!-- 3D camera (phase 12) -->
     <div class="row">
       <section class="panel" style="width: 100%;">
@@ -736,6 +763,10 @@
     'camera.elevation':         bindSlider('camera-elevation',         'camera.elevation', (v) => v.toFixed(0)),
     'camera.orbit_speed':       bindSlider('camera-orbit_speed',       'camera.orbit_speed'),
     'camera.fov_deg':           bindSlider('camera-fov_deg',           'camera.fov_deg', (v) => v.toFixed(0)),
+    'force.noise':              bindSlider('force-noise',              'force.noise'),
+    'force.vortex':             bindSlider('force-vortex',             'force.vortex'),
+    'force.cohesion':           bindSlider('force-cohesion',           'force.cohesion'),
+    'force.max_speed':          bindSlider('force-max_speed',          'force.max_speed', (v) => v.toFixed(1)),
   };
 
   // ---------------------------------------------------------------- //
@@ -1035,6 +1066,13 @@
       sliders['camera.orbit_speed'].set(s.camera.orbit_speed);
       sliders['camera.fov_deg'].set(s.camera.fov_deg);
       toggleAutorotate.set(s.camera.autorotate);
+    }
+    // force (phase 14)
+    if (s.force) {
+      sliders['force.noise'].set(s.force.noise);
+      sliders['force.vortex'].set(s.force.vortex);
+      sliders['force.cohesion'].set(s.force.cohesion);
+      sliders['force.max_speed'].set(s.force.max_speed);
     }
   }
 
