@@ -34,14 +34,26 @@ def test_health_endpoint_no_data() -> None:
     client = TestClient(make_app(bus))
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "has_data": False, "block_count": 0}
+    assert r.json() == {
+        "ok": True,
+        "has_data": False,
+        "block_count": 0,
+        "slow_active": False,
+        "slow_updates": 0,
+    }
 
 
 def test_health_endpoint_with_data() -> None:
     bus = _bus_with(FastFeatures(rms=[0.1] * 14, block_count=42))
     client = TestClient(make_app(bus))
     r = client.get("/health")
-    assert r.json() == {"ok": True, "has_data": True, "block_count": 42}
+    assert r.json() == {
+        "ok": True,
+        "has_data": True,
+        "block_count": 42,
+        "slow_active": False,
+        "slow_updates": 0,
+    }
 
 
 def test_websocket_streams_features() -> None:

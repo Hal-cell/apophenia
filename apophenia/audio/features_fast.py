@@ -258,12 +258,19 @@ def fast_features_loop(
     source: AudioSource,
     bus: FeatureBus,
     stop_event: threading.Event,
+    audio_buffer: object | None = None,
 ) -> None:
     """Pump audio blocks through feature extraction and into the bus.
 
     Runs in its own thread. Returns when stop_event is set, the source's
     iterator terminates (file source on a non-looping run), or the source
     raises.
+
+    If `audio_buffer` is provided (an `AudioBuffer` from
+    features_slow), each incoming block is also written to that ring
+    so the slow worker has a continuously-updated 1-2s window of audio
+    available for CLAP inference. Typed as `object` here to keep
+    features_fast importable without features_slow's torch deps.
     """
     source.open()
     block_count = 0
@@ -279,6 +286,8 @@ def fast_features_loop(
             if stop_event.is_set():
                 break
             block_count += 1
+            if audio_buffer is not None:
+                audio_buffer.write(block)  # type: ignore[attr-defined]
             rms, peak, centroid = compute_block_features(block, source.sample_rate, window=window)
             envelope = detector.update(rms)
             bus.publish(
