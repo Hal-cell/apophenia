@@ -446,3 +446,156 @@ def test_phase13_reactive_vocabulary() -> None:
     r_anchored = interp.interpret("anchored")
     assert r_anchored["partial"]["mood"]["arousal"] < 0
     assert r_anchored["partial"]["camera"]["autorotate"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Phase 14: force model
+# --------------------------------------------------------------------------- #
+
+
+def test_high_cohesion_keeps_particles_closer_to_emitter() -> None:
+    """Phase-14 cohesion: with high cohesion + low noise, particles
+    stay in tight clusters around their emitters. With cohesion=0
+    + same-strength noise, they wander far further.
+
+    We compare the mean distance of live particles from their
+    emitter ring (radius 1.6) for two runs that share all other
+    parameters.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        features = FastFeatures(
+            rms=[0.4] * 14,
+            peak=[0.5] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.2] * 14,
+            n_channels=14,
+        )
+
+        # Tight cluster: high cohesion, low noise, low vortex.
+        state_tight = VisualState()
+        state_tight.force.cohesion = 0.95
+        state_tight.force.noise = 0.1
+        state_tight.force.vortex = 0.1
+        state_tight.force.max_speed = 1.0
+
+        # Loose: low cohesion, similar noise budget.
+        state_loose = VisualState()
+        state_loose.force.cohesion = 0.0
+        state_loose.force.noise = 0.6
+        state_loose.force.vortex = 0.1
+        state_loose.force.max_speed = 4.0
+
+        pe_tight = ParticleEngine(ctx, n_particles=2000)
+        after_tight = _run_n_steps(pe_tight, features, state_tight, n_steps=40)
+        pe_loose = ParticleEngine(ctx, n_particles=2000)
+        after_loose = _run_n_steps(pe_loose, features, state_loose, n_steps=40)
+
+        # For each live particle compute distance from its assigned
+        # emitter (deterministic via int(seed*14) → ring point).
+        def mean_distance(buf):
+            seeds = buf[:, 7]
+            channels = np.clip(np.floor(seeds * 14).astype(int), 0, 13)
+            angles = channels.astype(np.float32) / 14.0 * 2 * np.pi
+            ex = np.cos(angles) * 1.6
+            ez = np.sin(angles) * 1.6
+            ey = np.sin(channels.astype(np.float32) * 0.91) * 0.25
+            live = buf[:, 1] > -50.0
+            if live.sum() == 0:
+                return None
+            dx = buf[live, 0] - ex[live]
+            dy = buf[live, 1] - ey[live]
+            dz = buf[live, 2] - ez[live]
+            return np.sqrt(dx * dx + dy * dy + dz * dz).mean()
+
+        d_tight = mean_distance(after_tight)
+        d_loose = mean_distance(after_loose)
+        assert d_tight is not None and d_loose is not None
+        # Tight cluster should sit much closer to the emitter ring.
+        assert d_tight < d_loose, (
+            f"high cohesion should hold closer to emitter; "
+            f"tight={d_tight:.3f}, loose={d_loose:.3f}"
+        )
+        # And specifically: tight cluster's mean radius should be small.
+        assert d_tight < 1.5, (
+            f"high cohesion should pull particles to emitter; "
+            f"got mean d={d_tight:.3f}"
+        )
+    finally:
+        ctx.release()
+
+
+def test_max_speed_caps_velocity_magnitude() -> None:
+    """Phase-14 speed cap: no live particle's |vel| should exceed
+    max_speed at the end of a run."""
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        # Loud audio + high noise + high vortex would normally push
+        # particles to high speed; the cap should still hold.
+        features = FastFeatures(
+            rms=[0.9] * 14,
+            peak=[1.0] * 14,
+            centroid=[3000.0] * 14,
+            onset_envelope=[0.8] * 14,
+            n_channels=14,
+        )
+        state = VisualState()
+        state.force.noise = 1.0
+        state.force.vortex = 1.0
+        state.force.cohesion = 0.0  # let them fly out
+        state.force.max_speed = 1.5
+        state.motion.speed = 2.0  # huge initial spawn velocity
+
+        pe = ParticleEngine(ctx, n_particles=2000)
+        after = _run_n_steps(pe, features, state, n_steps=15)
+
+        live = after[:, 1] > -50.0
+        speeds = np.linalg.norm(after[live, 4:7], axis=1)
+        # Allow a tiny epsilon for floating-point noise; the cap is 1.5.
+        assert speeds.max() <= 1.5 + 0.05, (
+            f"speed cap violated: max={speeds.max():.3f}, cap=1.5"
+        )
+    finally:
+        ctx.release()
+
+
+def test_phase14_force_vocabulary_writes_force_state() -> None:
+    """Phase-14 vocabulary keywords write into `state.force.*`."""
+    from apophenia.prompt.interpreter import PromptInterpreter
+
+    interp = PromptInterpreter()
+    r = interp.interpret("ikeda tornado")
+    p = r["partial"]
+    # tornado wins on force values (later token); ikeda contributed before.
+    assert p["force"]["vortex"] >= 0.85
+    assert p["force"]["cohesion"] >= 0.5
+    # ikeda's saturation drop should still apply (different subtree).
+    assert p["palette"]["saturation"] <= 0.2
+
+    r_dispersed = interp.interpret("dispersed")
+    assert r_dispersed["partial"]["force"]["cohesion"] < 0.1
+    assert r_dispersed["partial"]["force"]["max_speed"] >= 3.0
+
+
+def test_phase14_force_vocabulary_validates_against_schema() -> None:
+    """Every force-touching keyword must produce a valid ForceState."""
+    from apophenia.prompt.interpreter import VOCABULARY
+    from apophenia.state import ForceState
+
+    for keyword, diff in VOCABULARY.items():
+        if "force" not in diff:
+            continue
+        merged = {**ForceState().model_dump(), **diff["force"]}
+        ForceState.model_validate(merged), f"{keyword!r} produces invalid force state"

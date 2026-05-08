@@ -27,125 +27,156 @@ from typing import Any
 # Each entry is (label, partial state dict) deep-merged onto VisualState
 # defaults at materialisation time.
 STARTER_DATA: list[tuple[str, dict[str, Any]]] = [
-    # ---- 1–4: minimal → loud (energy axis) ---- #
+    # ---- 1–4: cluster shapes ---- #
     (
-        "bloom",
+        "ikeda",  # tight monochrome data cluster (Ryoji Ikeda reference)
         {
-            "text": {"prompt": "soft warm bloom"},
-            "motion": {"speed": 0.7, "density": 0.6, "onset_sensitivity": 1.4},
-            "palette": {"hue": 0.05, "saturation": 1.2},
-            "mood": {"valence": 0.6, "arousal": -0.1},
+            "text": {"prompt": "ikeda dense data tight"},
+            "force": {"cohesion": 0.85, "vortex": 0.15, "noise": 0.25,
+                      "max_speed": 1.0},
+            "motion": {"density": 0.95, "speed": 0.6, "onset_sensitivity": 1.2},
+            "palette": {"saturation": 0.15},
+            "camera": {"distance": 4.5, "elevation": 5.0, "orbit_speed": 0.04},
         },
     ),
     (
-        "paper",
+        "fluid",  # TD-cluster-style flowing liquid
         {
-            "text": {"prompt": "subtle muted drift"},
-            "motion": {"speed": 0.5, "density": 0.3, "onset_sensitivity": 0.6},
-            "palette": {"hue": 0.08, "saturation": 0.55},
-            "mood": {"valence": 0.2, "arousal": -0.4},
+            "text": {"prompt": "fluid flowing cohesive"},
+            "force": {"cohesion": 0.6, "vortex": 0.35, "noise": 0.7,
+                      "max_speed": 1.8},
+            "motion": {"density": 0.7, "speed": 0.9},
+            "palette": {"saturation": 0.6},
+            "camera": {"distance": 5.5, "elevation": 20.0, "orbit_speed": 0.05},
         },
     ),
     (
-        "liquid_metal",
+        "tornado",  # tight whirlpool around emitters
         {
-            "text": {"prompt": "smooth cool flow"},
-            "motion": {"speed": 0.8, "density": 0.55, "onset_sensitivity": 1.1},
-            "palette": {"hue": 0.55, "saturation": 0.95},
-            "fx": {"chromatic": 0.1},
-            "mood": {"valence": -0.2, "arousal": 0.0},
+            "text": {"prompt": "tornado tight close pulsing"},
+            "force": {"cohesion": 0.7, "vortex": 0.95, "noise": 0.4,
+                      "max_speed": 3.0},
+            "motion": {"density": 0.8, "onset_sensitivity": 1.6},
+            "palette": {"saturation": 0.7},
+            "camera": {"distance": 3.5, "elevation": 25.0, "orbit_speed": 0.12},
+            "mood": {"arousal": 0.7},
         },
     ),
     (
-        "cathedral",
+        "exploding",  # anti-cluster: scatter outward on every hit
         {
-            "text": {"prompt": "violet agitated pulse"},
-            "motion": {"speed": 1.4, "density": 0.7, "onset_sensitivity": 1.6},
-            "palette": {"hue": 0.78, "saturation": 1.25},
-            "fx": {"glitch": 0.05},
-            "mood": {"valence": 0.4, "arousal": 0.6},
+            "text": {"prompt": "exploding volatile dispersed"},
+            "force": {"cohesion": 0.05, "vortex": 0.15, "noise": 0.5,
+                      "max_speed": 5.0},
+            "motion": {"density": 0.7, "onset_sensitivity": 1.7,
+                       "speed": 1.4},
+            "palette": {"saturation": 0.85},
+            "camera": {"distance": 7.0, "elevation": 15.0, "orbit_speed": 0.08},
+            "mood": {"arousal": 0.9},
         },
     ),
-    # ---- 5–8: organic → synthetic ---- #
+    # ---- 5–8: motion / energy levels ---- #
     (
-        "forest",
+        "drifting",  # quiet, slow, sparse — meditative
         {
-            "text": {"prompt": "calm green drift"},
-            "motion": {"speed": 0.5, "density": 0.45, "onset_sensitivity": 0.8},
-            "palette": {"hue": 0.33, "saturation": 0.95},
-            "fx": {"chromatic": 0.05},
-            "mood": {"valence": 0.1, "arousal": -0.5},
-        },
-    ),
-    (
-        "coral",
-        {
-            "text": {"prompt": "warm cyan ripple"},
-            "motion": {"speed": 0.8, "density": 0.55, "onset_sensitivity": 1.1},
-            "palette": {"hue": 0.5, "saturation": 1.15},
-            "fx": {"chromatic": 0.15},
-            "mood": {"valence": 0.3, "arousal": 0.0},
+            "text": {"prompt": "calm drifting sparse cool"},
+            "force": {"cohesion": 0.4, "vortex": 0.2, "noise": 0.5,
+                      "max_speed": 1.2},
+            "motion": {"density": 0.35, "speed": 0.5},
+            "palette": {"hue": 0.55, "saturation": 0.4},
+            "camera": {"distance": 6.0, "elevation": 10.0, "orbit_speed": 0.03},
+            "mood": {"valence": -0.2, "arousal": -0.4},
         },
     ),
     (
-        "circuit",
+        "breathing",  # slow modulating cluster, mid-density
         {
-            "text": {"prompt": "fine yellow punchy"},
-            "motion": {"speed": 1.0, "density": 0.75, "onset_sensitivity": 1.6},
-            "palette": {"hue": 0.15, "saturation": 1.3},
-            "fx": {"glitch": 0.08},
-            "mood": {"valence": 0.5, "arousal": 0.3},
+            "text": {"prompt": "breathing reactive pulsing"},
+            "force": {"cohesion": 0.7, "vortex": 0.3, "noise": 0.45,
+                      "max_speed": 1.6},
+            "motion": {"density": 0.6, "onset_sensitivity": 1.0,
+                       "speed": 0.7},
+            "palette": {"saturation": 0.5},
+            "camera": {"distance": 5.0, "elevation": 18.0, "orbit_speed": 0.04},
+            "mood": {"arousal": 0.3},
         },
     ),
     (
-        "neon_city",
+        "swirling",  # whirlpool-ish, mid orbit
         {
-            "text": {"prompt": "neon violet agitated glitchy"},
-            "motion": {"speed": 1.5, "density": 0.65, "onset_sensitivity": 1.5},
-            "palette": {"hue": 0.85, "saturation": 1.45},
-            "fx": {"glitch": 0.4, "chromatic": 0.35},
-            "mood": {"valence": 0.4, "arousal": 0.7},
+            "text": {"prompt": "swirling vortex flowing"},
+            "force": {"cohesion": 0.55, "vortex": 0.7, "noise": 0.5,
+                      "max_speed": 2.5},
+            "motion": {"density": 0.65, "speed": 1.1},
+            "palette": {"saturation": 0.65},
+            "camera": {"distance": 5.0, "orbit_speed": 0.18, "elevation": 25.0},
         },
     ),
-    # ---- 9–12: post-FX showcase ---- #
     (
-        "cosmic",
+        "stormy",  # high-energy chaotic
         {
-            "text": {"prompt": "slow violet kaleido sparse"},
-            "motion": {"speed": 0.4, "density": 0.25, "onset_sensitivity": 1.0},
-            "palette": {"hue": 0.7, "saturation": 1.15},
+            "text": {"prompt": "stormy chaotic turbulent"},
+            "force": {"cohesion": 0.3, "vortex": 0.6, "noise": 0.95,
+                      "max_speed": 4.0},
+            "motion": {"density": 0.75, "onset_sensitivity": 1.5,
+                       "speed": 1.5},
+            "palette": {"saturation": 0.7},
+            "camera": {"distance": 6.5, "elevation": 30.0, "orbit_speed": 0.15},
+            "mood": {"arousal": 0.8},
+        },
+    ),
+    # ---- 9–12: post-FX + camera angle showcases ---- #
+    (
+        "cosmic",  # very slow, kaleidoscope, cool
+        {
+            "text": {"prompt": "slow cool kaleido"},
+            "force": {"cohesion": 0.6, "vortex": 0.25, "noise": 0.4,
+                      "max_speed": 1.4},
+            "motion": {"density": 0.5, "speed": 0.5},
+            "palette": {"hue": 0.6, "saturation": 0.6},
             "fx": {"kaleidoscope": 6, "chromatic": 0.1},
-            "mood": {"valence": -0.1, "arousal": -0.3},
+            "camera": {"distance": 7.0, "elevation": 20.0, "orbit_speed": 0.04},
         },
     ),
     (
-        "fire",
+        "fire",  # hot intense cluster
         {
-            "text": {"prompt": "hot intense pulse"},
-            "motion": {"speed": 1.3, "density": 0.65, "onset_sensitivity": 1.5},
-            "palette": {"hue": 0.02, "saturation": 1.5},
-            "fx": {"glitch": 0.1, "chromatic": 0.15},
-            "mood": {"valence": 0.8, "arousal": 0.7},
+            "text": {"prompt": "hot intense pulsing tight"},
+            "force": {"cohesion": 0.75, "vortex": 0.6, "noise": 0.5,
+                      "max_speed": 2.5},
+            "motion": {"density": 0.7, "onset_sensitivity": 1.5,
+                       "speed": 1.2},
+            "palette": {"hue": 0.02, "saturation": 1.0},
+            "fx": {"chromatic": 0.15},
+            "camera": {"distance": 4.0, "elevation": 12.0, "orbit_speed": 0.08},
+            "mood": {"arousal": 0.6},
         },
     ),
     (
-        "kaleido",
+        "ghost",  # long trails over slow cluster
         {
-            "text": {"prompt": "fragmented warm dense"},
-            "motion": {"speed": 0.9, "density": 0.8, "onset_sensitivity": 1.3},
-            "palette": {"hue": 0.06, "saturation": 1.3},
-            "fx": {"kaleidoscope": 8},
-            "mood": {"valence": 0.5, "arousal": 0.2},
+            "text": {"prompt": "ghost lingering breathing"},
+            "force": {"cohesion": 0.55, "vortex": 0.3, "noise": 0.4,
+                      "max_speed": 1.5},
+            "motion": {"density": 0.55, "speed": 0.7,
+                       "onset_sensitivity": 0.9},
+            "palette": {"saturation": 0.4},
+            "fx": {"trail": 0.85, "chromatic": 0.1},
+            "camera": {"distance": 5.5, "elevation": 15.0, "orbit_speed": 0.04},
         },
     ),
     (
-        "glitch",
+        "glitch",  # broken / shattered
         {
-            "text": {"prompt": "shattered fragmented broken"},
-            "motion": {"speed": 1.4, "density": 0.55, "onset_sensitivity": 1.7},
-            "palette": {"saturation": 1.25},
+            "text": {"prompt": "shattered broken volatile"},
+            "force": {"cohesion": 0.3, "vortex": 0.5, "noise": 0.7,
+                      "max_speed": 3.5},
+            "motion": {"density": 0.6, "onset_sensitivity": 1.7,
+                       "speed": 1.3},
+            "palette": {"saturation": 0.85},
             "fx": {"glitch": 0.6, "chromatic": 0.4, "kaleidoscope": 4},
-            "mood": {"valence": 0.0, "arousal": 0.6},
+            "camera": {"distance": 5.0, "orbit_speed": 0.18},
+            "mood": {"arousal": 0.7},
         },
     ),
 ]

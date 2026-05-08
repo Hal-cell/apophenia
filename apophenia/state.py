@@ -87,6 +87,37 @@ class TransportState(BaseModel):
     freeze: bool = False
 
 
+class ForceState(BaseModel):
+    """Phase-14 fluid-cluster force model. Each particle receives the
+    sum of these forces every step; the result is then clamped to
+    `max_speed` for terminal-velocity behaviour.
+
+    Defaults are tuned for the TD-cluster + Ikeda-density aesthetic:
+    moderate cohesion (particles cluster around their emitter rather
+    than scattering), moderate noise (organic flow lines), gentle
+    vortex (slow rotation rather than tornado), and a max_speed of
+    2.0 world-units/sec so particles never feel ballistic.
+    """
+
+    noise: float = Field(0.5, ge=0.0, le=1.0)
+    """Curl-noise / flow-field strength. 0 = particles ballistic;
+    1 = strong organic flow that bends every trajectory."""
+
+    vortex: float = Field(0.4, ge=0.0, le=1.0)
+    """Tangential rotation around each particle's emitter (axis = world
+    Y). 0 = no spin; 1 = tight whirlpool around each emitter."""
+
+    cohesion: float = Field(0.5, ge=0.0, le=1.0)
+    """Pull toward emitter — the cluster lever. 0 = particles drift
+    away forever; 1 = they hug the emitter tightly. Phase-14 default
+    of 0.5 gives a TD-style breathing cluster."""
+
+    max_speed: float = Field(2.0, ge=0.5, le=8.0)
+    """Terminal velocity cap (world-units / sec). Forces particles
+    into a fluid-like flow rather than letting them accelerate
+    indefinitely."""
+
+
 class CameraState(BaseModel):
     """3D camera around the particle world. Phase-12 addition.
 
@@ -134,6 +165,7 @@ class VisualState(BaseModel):
     fx: FxState = Field(default_factory=FxState)
     transport: TransportState = Field(default_factory=TransportState)
     camera: CameraState = Field(default_factory=CameraState)
+    force: ForceState = Field(default_factory=ForceState)
 
     def model_post_init(self, __context: object) -> None:  # noqa: D401
         """Validate channel_weight length matches N_CHANNELS."""

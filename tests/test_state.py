@@ -65,3 +65,32 @@ def test_fx_trail_one_or_above_rejected() -> None:
         FxState(trail=1.5)
     with pytest.raises(ValidationError):
         FxState(trail=-0.1)
+
+
+def test_force_state_defaults_and_ranges() -> None:
+    """Phase-14 ForceState: TD-cluster-friendly defaults, all four
+    levers validate at boundaries."""
+    from apophenia.state import ForceState
+
+    f = ForceState()
+    assert f.noise == 0.5
+    assert f.vortex == 0.4
+    assert f.cohesion == 0.5
+    assert f.max_speed == 2.0
+
+    with pytest.raises(ValidationError):
+        ForceState(noise=1.5)
+    with pytest.raises(ValidationError):
+        ForceState(vortex=-0.1)
+    with pytest.raises(ValidationError):
+        ForceState(cohesion=2.0)
+    with pytest.raises(ValidationError):
+        ForceState(max_speed=0.1)  # below 0.5 floor
+    with pytest.raises(ValidationError):
+        ForceState(max_speed=10.0)  # above 8.0 ceiling
+
+
+def test_visual_state_includes_force_default() -> None:
+    s = VisualState()
+    assert s.force.cohesion == 0.5
+    assert s.force.max_speed == 2.0
