@@ -173,6 +173,21 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "gentle":    {"camera": {"autorotate": True, "orbit_speed": 0.03},
                   "motion": {"speed": 0.6}},
 
+    # ---- Audio-reactivity modifiers (phase 13) ---- #
+    # These don't write camera params directly — they set `mood.arousal`,
+    # which is what couples audio to the camera at runtime in the
+    # particle engine (orbit_speed and elevation get modulated by
+    # arousal × audio_intensity each frame).
+    "reactive":   {"mood": {"arousal": 0.6}},
+    "breathing":  {"mood": {"arousal": 0.3},
+                   "motion": {"speed": 0.7, "onset_sensitivity": 0.8}},
+    "pulsing":    {"mood": {"arousal": 0.7},
+                   "motion": {"onset_sensitivity": 1.6}},
+    "volatile":   {"mood": {"arousal": 0.9},
+                   "motion": {"speed": 1.5, "onset_sensitivity": 1.7}},
+    "anchored":   {"mood": {"arousal": -0.5},
+                   "camera": {"autorotate": False}},
+
     # ---- Behaviour primitives ---- #
     "bloom":     {"motion": {"speed": 0.7, "density": 0.6,
                              "onset_sensitivity": 1.4}},

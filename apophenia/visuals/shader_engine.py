@@ -35,6 +35,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from apophenia.audio.features_fast import FastFeatures, FeatureBus
+    from apophenia.audio.features_slow import SlowBus
     from apophenia.control.state_bus import StateBus
     from apophenia.state import VisualState
 
@@ -457,6 +458,7 @@ class ApopheniaWindow(mglw.WindowConfig):
     # Set externally before the window launches.
     bus: FeatureBus | None = None
     state_bus: StateBus | None = None
+    slow_bus: SlowBus | None = None
     fps_log_period_s: float = 5.0
 
     def __init__(self, **kwargs: object) -> None:
@@ -471,6 +473,7 @@ class ApopheniaWindow(mglw.WindowConfig):
 
         self._bus_ref: FeatureBus = ApopheniaWindow.bus
         self._state_bus_ref: StateBus | None = ApopheniaWindow.state_bus
+        self._slow_bus_ref: SlowBus | None = ApopheniaWindow.slow_bus
         self.engine = ShaderEngine(self.ctx)
         # Phase-12: 3D particle world rendered additively after the
         # 2D shader pass into the same offscreen FBO. Always-on when
@@ -540,13 +543,19 @@ class ApopheniaWindow(mglw.WindowConfig):
             # 2D shader output. Particle simulation advances by
             # `frame_time` (the actual time delta between frames) so
             # motion is independent of frame rate.
+            #
+            # Phase-13: also pass the latest SlowFeatures (CLAP) so the
+            # particle engine can drive flow-field strength from the
+            # embedding norm.
             if self.particle_engine is not None:
+                slow = self._slow_bus_ref.latest() if self._slow_bus_ref is not None else None
                 self.particle_engine.update_and_render(
                     features=features,
                     time_s=render_time,
                     dt=max(frame_time, 1e-3),
                     resolution=self.window_size,
                     state=state,
+                    slow=slow,
                 )
 
             # Switch back to the default framebuffer for the composite pass.
