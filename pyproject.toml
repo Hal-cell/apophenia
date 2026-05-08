@@ -26,6 +26,7 @@ dependencies = [
 visuals = [
     "moderngl>=5.10",
     "moderngl-window>=2.4",
+    "glfw>=2.6",  # explicit window backend; reliable on macOS / X11 / Wayland
 ]
 ai = [
     "torch>=2.2",
