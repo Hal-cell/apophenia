@@ -1,205 +1,151 @@
 """Curated 12-preset starter bank shipped with the package.
 
-This is the V1 first-run experience: when a user installs apophenia and
-there's no `~/.config/apophenia/presets.json` yet, `presets.load()`
-materialises this bank to disk so the preset grid in the UI is alive
-on first launch instead of empty.
+Phase-10 retune: the V1 starter prompts described image content (e.g.
+"molten glass cathedral, deep violet, ribbons of fire") which made
+sense for SDXL-Turbo but is the wrong shape for V1.5's prompt →
+shader-parameter architecture. Each starter now has a prompt composed
+from PromptInterpreter vocabulary words — so a user clicking a slot
+gets state that matches what the same prompt would produce if typed
+directly.
 
-The first 12 slots cover a deliberate spread:
-  * 1–4   minimal / quiet → busy / loud (level along the "energy" axis)
-  * 5–8   organic / natural → digital / synthetic (along "synthetic-ness")
-  * 9–12  experimental territories that show off post-FX
-Slots 13–16 ship empty so the user has space for their own without
-having to first delete an existing one.
+Slots 1–4   start with "minimal / sparse" and ramp to "dense / loud".
+Slots 5–8   organic → synthetic textures.
+Slots 9–12  showcase the post-FX territory (kaleidoscope / glitch /
+            chromatic).
+Slots 13–16 ship empty so the user has space to save their own.
 
-Each slot is a complete `VisualState` snapshot — prompt + every slider /
-knob / FX / channel weight — captured with the schema's defaults filled
-in. To tweak the bank, edit `STARTER_DATA` below and the change ships
-in the next install. Existing users keep their saved-over slots.
+Each starter sets `text.prompt` plus a curated motion / palette / fx /
+mood tuple. Save/load round-trips through the same `VisualState` schema
+that powers the live state, so any schema drift fires an
+import-time error rather than silently shipping a broken bank.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# Each entry is (label, partial state dict). The partial is deep-merged
-# onto VisualState defaults at materialisation time, so any field omitted
-# inherits its default from the schema.
+# Each entry is (label, partial state dict) deep-merged onto VisualState
+# defaults at materialisation time.
 STARTER_DATA: list[tuple[str, dict[str, Any]]] = [
-    # ---- 1–4: energy axis (minimal → loud) ---- #
+    # ---- 1–4: minimal → loud (energy axis) ---- #
     (
         "bloom",
         {
-            "text": {"prompt": "soft lavender clouds at dawn, bokeh light, dreamy haze"},
-            "blend": {"audio_text": 0.45, "shader_ai": 0.55},
-            "cfg": 4.0,
-            "palette": {"hue": 0.05, "saturation": 0.85},
+            "text": {"prompt": "soft warm bloom"},
+            "motion": {"speed": 0.7, "density": 0.6, "onset_sensitivity": 1.4},
+            "palette": {"hue": 0.05, "saturation": 1.2},
+            "mood": {"valence": 0.6, "arousal": -0.1},
         },
     ),
     (
         "paper",
         {
-            "text": {
-                "prompt": (
-                    "torn paper textures, watercolor stains, "
-                    "delicate ink wash, asian calligraphy"
-                ),
-            },
-            "blend": {"audio_text": 0.6, "shader_ai": 0.3},  # shader-heavy
-            "cfg": 4.5,
-            "palette": {"saturation": 0.7},
+            "text": {"prompt": "subtle muted drift"},
+            "motion": {"speed": 0.5, "density": 0.3, "onset_sensitivity": 0.6},
+            "palette": {"hue": 0.08, "saturation": 0.55},
+            "mood": {"valence": 0.2, "arousal": -0.4},
         },
     ),
     (
         "liquid_metal",
         {
-            "text": {
-                "prompt": (
-                    "molten chrome surface, slow ripples, reflective, "
-                    "studio lighting, hyperreal"
-                ),
-            },
-            "blend": {"audio_text": 0.55, "shader_ai": 0.65},
-            "cfg": 5.0,
-            "palette": {"saturation": 1.1},
+            "text": {"prompt": "smooth cool flow"},
+            "motion": {"speed": 0.8, "density": 0.55, "onset_sensitivity": 1.1},
+            "palette": {"hue": 0.55, "saturation": 0.95},
             "fx": {"chromatic": 0.1},
+            "mood": {"valence": -0.2, "arousal": 0.0},
         },
     ),
     (
         "cathedral",
         {
-            "text": {
-                "prompt": (
-                    "molten glass cathedral, deep violet, ribbons of fire, "
-                    "ornate baroque, 35mm film grain"
-                ),
-            },
-            "blend": {"audio_text": 0.7, "shader_ai": 0.6},
-            "cfg": 6.0,
-            "palette": {"hue": 0.7, "saturation": 1.2},
+            "text": {"prompt": "violet agitated pulse"},
+            "motion": {"speed": 1.4, "density": 0.7, "onset_sensitivity": 1.6},
+            "palette": {"hue": 0.78, "saturation": 1.25},
             "fx": {"glitch": 0.05},
+            "mood": {"valence": 0.4, "arousal": 0.6},
         },
     ),
     # ---- 5–8: organic → synthetic ---- #
     (
         "forest",
         {
-            "text": {
-                "prompt": (
-                    "ancient redwood forest in mist, shafts of light through leaves, "
-                    "moss, cinematic"
-                ),
-            },
-            "blend": {"audio_text": 0.5, "shader_ai": 0.55},
-            "cfg": 5.0,
-            "palette": {"hue": 0.3, "saturation": 1.0},
+            "text": {"prompt": "calm green drift"},
+            "motion": {"speed": 0.5, "density": 0.45, "onset_sensitivity": 0.8},
+            "palette": {"hue": 0.33, "saturation": 0.95},
             "fx": {"chromatic": 0.05},
+            "mood": {"valence": 0.1, "arousal": -0.5},
         },
     ),
     (
         "coral",
         {
-            "text": {
-                "prompt": (
-                    "underwater coral reef, schools of fish, soft caustics, "
-                    "bioluminescent"
-                ),
-            },
-            "blend": {"audio_text": 0.55, "shader_ai": 0.5},
-            "cfg": 5.5,
-            "palette": {"hue": 0.55, "saturation": 1.15},
+            "text": {"prompt": "warm cyan ripple"},
+            "motion": {"speed": 0.8, "density": 0.55, "onset_sensitivity": 1.1},
+            "palette": {"hue": 0.5, "saturation": 1.15},
             "fx": {"chromatic": 0.15},
+            "mood": {"valence": 0.3, "arousal": 0.0},
         },
     ),
     (
         "circuit",
         {
-            "text": {
-                "prompt": (
-                    "circuit board macro, gold traces, intricate geometric pattern, "
-                    "high contrast"
-                ),
-            },
-            "blend": {"audio_text": 0.65, "shader_ai": 0.7},
-            "cfg": 5.5,
-            "palette": {"hue": 0.13, "saturation": 1.3},
+            "text": {"prompt": "fine yellow punchy"},
+            "motion": {"speed": 1.0, "density": 0.75, "onset_sensitivity": 1.6},
+            "palette": {"hue": 0.15, "saturation": 1.3},
             "fx": {"glitch": 0.08},
+            "mood": {"valence": 0.5, "arousal": 0.3},
         },
     ),
     (
         "neon_city",
         {
-            "text": {
-                "prompt": (
-                    "cyberpunk city at night, rain, neon reflections on wet asphalt, "
-                    "anamorphic flares"
-                ),
-            },
-            "blend": {"audio_text": 0.7, "shader_ai": 0.75},
-            "cfg": 6.5,
-            "palette": {"hue": 0.85, "saturation": 1.4},
-            "fx": {"glitch": 0.15, "chromatic": 0.25},
+            "text": {"prompt": "neon violet agitated glitchy"},
+            "motion": {"speed": 1.5, "density": 0.65, "onset_sensitivity": 1.5},
+            "palette": {"hue": 0.85, "saturation": 1.45},
+            "fx": {"glitch": 0.4, "chromatic": 0.35},
+            "mood": {"valence": 0.4, "arousal": 0.7},
         },
     ),
-    # ---- 9–12: post-FX territory ---- #
+    # ---- 9–12: post-FX showcase ---- #
     (
         "cosmic",
         {
-            "text": {
-                "prompt": (
-                    "spiral galaxy core, nebulae, deep space, billions of stars, "
-                    "cinematic, hubble"
-                ),
-            },
-            "blend": {"audio_text": 0.5, "shader_ai": 0.55},
-            "cfg": 5.0,
-            "palette": {"hue": 0.7, "saturation": 1.2},
+            "text": {"prompt": "slow violet kaleido sparse"},
+            "motion": {"speed": 0.4, "density": 0.25, "onset_sensitivity": 1.0},
+            "palette": {"hue": 0.7, "saturation": 1.15},
             "fx": {"kaleidoscope": 6, "chromatic": 0.1},
+            "mood": {"valence": -0.1, "arousal": -0.3},
         },
     ),
     (
         "fire",
         {
-            "text": {
-                "prompt": (
-                    "raging bonfire, dancing embers, dark background, "
-                    "long exposure, abstract"
-                ),
-            },
-            "blend": {"audio_text": 0.6, "shader_ai": 0.6},
-            "cfg": 5.0,
-            "palette": {"hue": 0.05, "saturation": 1.5},
+            "text": {"prompt": "hot intense pulse"},
+            "motion": {"speed": 1.3, "density": 0.65, "onset_sensitivity": 1.5},
+            "palette": {"hue": 0.02, "saturation": 1.5},
             "fx": {"glitch": 0.1, "chromatic": 0.15},
+            "mood": {"valence": 0.8, "arousal": 0.7},
         },
     ),
     (
         "kaleido",
         {
-            "text": {
-                "prompt": (
-                    "ornate persian rug pattern, jewel tones, kaleidoscopic, "
-                    "gold thread, intricate"
-                ),
-            },
-            "blend": {"audio_text": 0.55, "shader_ai": 0.6},
-            "cfg": 5.0,
-            "palette": {"saturation": 1.3},
+            "text": {"prompt": "fragmented warm dense"},
+            "motion": {"speed": 0.9, "density": 0.8, "onset_sensitivity": 1.3},
+            "palette": {"hue": 0.06, "saturation": 1.3},
             "fx": {"kaleidoscope": 8},
+            "mood": {"valence": 0.5, "arousal": 0.2},
         },
     ),
     (
         "glitch",
         {
-            "text": {
-                "prompt": (
-                    "vhs glitch art, signal corruption, scan lines, "
-                    "magnetic distortion, broken tv"
-                ),
-            },
-            "blend": {"audio_text": 0.65, "shader_ai": 0.7},
-            "cfg": 5.5,
+            "text": {"prompt": "shattered fragmented broken"},
+            "motion": {"speed": 1.4, "density": 0.55, "onset_sensitivity": 1.7},
             "palette": {"saturation": 1.25},
-            "fx": {"glitch": 0.5, "chromatic": 0.4},
+            "fx": {"glitch": 0.6, "chromatic": 0.4, "kaleidoscope": 4},
+            "mood": {"valence": 0.0, "arousal": 0.6},
         },
     ),
 ]

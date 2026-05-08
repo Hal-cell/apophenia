@@ -1,15 +1,18 @@
 """FastAPI server: localhost web UI + WebSocket fast-feature broadcast +
-state / preset HTTP API.
+state / preset HTTP API + prompt interpreter.
 
-Phase 6 surface (additions to phase 5 marked ★):
+Phase 10 surface (changes from phase 6 marked ★):
     GET    /                  → static `web/index.html`
     GET    /static/*          → static assets (CSS, JS, etc.)
-    GET    /health            → JSON liveness probe (now reports AI status ★)
+    GET    /health            → JSON liveness probe
     WS     /ws                → JSON stream at `broadcast_hz` carrying
                                  fast features + slow features + state
-                                 + AI metadata ★
+                                 (the V1 `ai` field is gone ★)
     GET    /api/state         → current `VisualState` as JSON
     PATCH  /api/state         → partial state update (deep-merged)
+    POST   /api/prompt   ★    → interpret a natural-language motion /
+                                 colour / energy descriptor and apply
+                                 the resulting state diff
     GET    /api/presets       → all 16 preset slots
     POST   /api/presets/{idx}/save    → save current state into slot
     POST   /api/presets/{idx}/recall  → load slot into state
@@ -21,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -43,9 +46,7 @@ from apophenia.control.presets import (
     save as save_bank,
 )
 from apophenia.control.state_bus import StateBus
-
-if TYPE_CHECKING:
-    from apophenia.ai.bus import AIBus
+from apophenia.prompt.interpreter import PromptInterpreter
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -56,21 +57,24 @@ def make_app(
     state_bus: StateBus | None = None,
     preset_path: Path | None = None,
     broadcast_hz: float = 30.0,
-    ai_bus: AIBus | None = None,
+    interpreter: PromptInterpreter | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app instance.
 
     `state_bus` and `preset_path` are optional; if omitted, a fresh
     `StateBus` is created and presets land at the default
     `~/.config/apophenia/presets.json`. Tests pass explicit instances
-    so they don't trample the user's real preset bank. `ai_bus` is the
-    AI tier mailbox; when None, the /ws payload reports `ai: null`.
+    so they don't trample the user's real preset bank. `interpreter`
+    is the natural-language → state-diff translator backing
+    `POST /api/prompt`; defaults to a fresh keyword-based one.
     """
     if broadcast_hz <= 0:
         raise ValueError("broadcast_hz must be > 0")
     period = 1.0 / broadcast_hz
     if state_bus is None:
         state_bus = StateBus()
+    if interpreter is None:
+        interpreter = PromptInterpreter()
 
     # Preset bank: load from disk lazily on first use, persist on every
     # save/clear. Lock guards the in-memory copy against concurrent
@@ -98,7 +102,6 @@ def make_app(
     async def health() -> JSONResponse:
         latest = bus.latest()
         slow = slow_bus.latest() if slow_bus else None
-        ai = ai_bus.latest() if ai_bus else None
         return JSONResponse(
             {
                 "ok": True,
@@ -106,8 +109,6 @@ def make_app(
                 "block_count": latest.block_count if latest else 0,
                 "slow_active": slow_bus is not None,
                 "slow_updates": slow.update_count if slow else 0,
-                "ai_active": ai_bus is not None,
-                "ai_gens": ai.gen_count if ai else 0,
             }
         )
 
@@ -133,6 +134,48 @@ def make_app(
                 detail={"errors": e.errors(include_url=False)},
             ) from e
         return JSONResponse(new_state.model_dump())
+
+    # ------------------------------------------------------------------ #
+    # Prompt API (Phase 10)
+    # ------------------------------------------------------------------ #
+
+    @app.post("/api/prompt")
+    async def post_prompt(body: dict[str, Any]) -> JSONResponse:
+        """Interpret a natural-language motion / colour / energy prompt
+        and apply the resulting state diff.
+
+        Request body: `{"text": "slow warm bloom"}`.
+        Response: `{"matched": [...], "applied": {...}, "state": {...}}`.
+
+        The prompt itself is also written into `state.text.prompt` so the
+        UI / preset bank captures the source text alongside the interpreted
+        diff. Unknown words are silently skipped — `matched=[]` means the
+        prompt produced no recognised keywords.
+        """
+        text = (body or {}).get("text", "")
+        if not isinstance(text, str):
+            raise HTTPException(
+                status_code=422, detail="`text` must be a string"
+            )
+        result = interpreter.interpret(text)
+        # Always update state.text.prompt with the original source so the
+        # UI's textarea + saved presets reflect what the user typed.
+        partial: dict[str, Any] = {"text": {"prompt": text}}
+        partial.update(result["partial"])
+        try:
+            new_state = state_bus.update(partial)
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=422,
+                detail={"errors": e.errors(include_url=False)},
+            ) from e
+        return JSONResponse(
+            {
+                "matched": result["matched"],
+                "applied": result["partial"],
+                "state": new_state.model_dump(),
+            }
+        )
 
     # ------------------------------------------------------------------ #
     # Preset API
@@ -196,11 +239,6 @@ def make_app(
                         payload["slow"] = slow.to_dict() if slow else None
                     else:
                         payload["slow"] = None
-                    if ai_bus is not None:
-                        ai = ai_bus.latest()
-                        payload["ai"] = ai.to_dict() if ai else None
-                    else:
-                        payload["ai"] = None
                     payload["state"] = state_bus.get().model_dump()
                     await websocket.send_json(payload)
                 await asyncio.sleep(period)

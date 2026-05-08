@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apophenia.audio.features_fast import FastFeatures, FeatureBus
@@ -45,8 +46,6 @@ def test_health_endpoint_no_data() -> None:
         "block_count": 0,
         "slow_active": False,
         "slow_updates": 0,
-        "ai_active": False,
-        "ai_gens": 0,
     }
 
 
@@ -60,8 +59,6 @@ def test_health_endpoint_with_data() -> None:
         "block_count": 42,
         "slow_active": False,
         "slow_updates": 0,
-        "ai_active": False,
-        "ai_gens": 0,
     }
 
 
@@ -133,7 +130,7 @@ def test_patch_state_partial_blend() -> None:
     body = r.json()
     assert body["blend"]["audio_text"] == 0.8
     # Untouched fields kept their defaults.
-    assert body["blend"]["clap_clip"] == 0.5
+    assert body["motion"]["speed"] == 1.0
     # And StateBus reflects it.
     assert state_bus.get().blend.audio_text == 0.8
 
@@ -186,7 +183,7 @@ def test_get_presets_initially_loads_starter_bank(tmp_path: Path) -> None:
 
 def test_save_recall_clear_round_trip(tmp_path: Path) -> None:
     state_bus = StateBus()
-    state_bus.update({"blend": {"audio_text": 0.7}, "cfg": 8.0})
+    state_bus.update({"blend": {"audio_text": 0.7}, "motion": {"speed": 1.5}})
     bus = _bus_with()
     client = TestClient(
         make_app(bus, state_bus=state_bus, preset_path=tmp_path / "presets.json")
@@ -199,16 +196,17 @@ def test_save_recall_clear_round_trip(tmp_path: Path) -> None:
     body = r.json()
     assert body["presets"][13]["label"] == "user-test-save"
     assert body["presets"][13]["state"]["blend"]["audio_text"] == 0.7
+    assert body["presets"][13]["state"]["motion"]["speed"] == 1.5
     # File on disk too.
     assert (tmp_path / "presets.json").exists()
 
     # Mutate state, then recall — should restore.
-    state_bus.update({"blend": {"audio_text": 0.1}, "cfg": 3.0})
-    assert state_bus.get().cfg == 3.0
+    state_bus.update({"blend": {"audio_text": 0.1}, "motion": {"speed": 0.5}})
+    assert state_bus.get().motion.speed == 0.5
     r = client.post("/api/presets/13/recall")
     assert r.status_code == 200
     assert r.json()["blend"]["audio_text"] == 0.7
-    assert state_bus.get().cfg == 8.0
+    assert state_bus.get().motion.speed == 1.5
 
     # Clear it.
     r = client.post("/api/presets/13/clear")
@@ -285,70 +283,58 @@ def test_websocket_payload_includes_state() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# AI tier (Phase 6)
+# Prompt API (Phase 10)
 # --------------------------------------------------------------------------- #
 
 
-def test_health_reports_ai_inactive_by_default() -> None:
+def test_prompt_endpoint_applies_motion_diff() -> None:
     bus = _bus_with()
-    client = TestClient(make_app(bus))
-    body = client.get("/health").json()
-    assert body["ai_active"] is False
-    assert body["ai_gens"] == 0
+    state_bus = StateBus()
+    client = TestClient(make_app(bus, state_bus=state_bus))
+
+    r = client.post("/api/prompt", json={"text": "slow warm bloom"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "slow" in body["matched"]
+    assert "warm" in body["matched"]
+    assert "bloom" in body["matched"]
+    # `applied` carries only the interpreted diff (not the prompt itself).
+    applied = body["applied"]
+    assert applied["motion"]["speed"] < 1.0  # slow + bloom both push speed down/up
+    assert applied["palette"]["hue"] == pytest.approx(0.05)
+    # `state` carries the full new state, including text.prompt.
+    assert body["state"]["text"]["prompt"] == "slow warm bloom"
+    assert state_bus.get().text.prompt == "slow warm bloom"
 
 
-def test_health_reports_ai_active_when_bus_present() -> None:
-    import numpy as np
-
-    from apophenia.ai.bus import AIBus, AIFrame
-
+def test_prompt_endpoint_unknown_words_silently_ignored() -> None:
     bus = _bus_with()
-    ai_bus = AIBus()
-    ai_bus.publish(
-        AIFrame(image=np.zeros((4, 4, 3), dtype=np.uint8), gen_count=7, latency_ms=12.0)
-    )
-    client = TestClient(make_app(bus, ai_bus=ai_bus))
-    body = client.get("/health").json()
-    assert body["ai_active"] is True
-    assert body["ai_gens"] == 7
+    state_bus = StateBus()
+    client = TestClient(make_app(bus, state_bus=state_bus))
+
+    r = client.post("/api/prompt", json={"text": "frobnicate the gibsonization"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["matched"] == []
+    # No state changes.
+    assert state_bus.get().motion.speed == 1.0
+    # Prompt itself still saved.
+    assert state_bus.get().text.prompt == "frobnicate the gibsonization"
 
 
-def test_websocket_payload_includes_ai() -> None:
-    import numpy as np
+def test_prompt_endpoint_rejects_non_string_text() -> None:
+    bus = _bus_with()
+    client = TestClient(make_app(bus, state_bus=StateBus()))
 
-    from apophenia.ai.bus import AIBus, AIFrame
-
-    bus = _bus_with(
-        FastFeatures(rms=[0.05] * 14, block_count=1, n_channels=14)
-    )
-    ai_bus = AIBus()
-    ai_bus.publish(
-        AIFrame(
-            image=np.zeros((8, 8, 3), dtype=np.uint8),
-            prompt="test",
-            gen_count=3,
-            latency_ms=42.0,
-            seed=99,
-            model_name="stub",
-        )
-    )
-    client = TestClient(make_app(bus, ai_bus=ai_bus, broadcast_hz=120))
-    with client.websocket_connect("/ws") as ws:
-        msg = ws.receive_json()
-        assert "ai" in msg
-        assert msg["ai"]["gen_count"] == 3
-        assert msg["ai"]["prompt"] == "test"
-        assert msg["ai"]["latency_ms"] == 42.0
-        # Image bytes must NOT make it through — too big for the wire.
-        assert "image" not in msg["ai"]
+    r = client.post("/api/prompt", json={"text": 42})
+    assert r.status_code == 422
 
 
-def test_websocket_payload_ai_null_when_disabled() -> None:
-    bus = _bus_with(
-        FastFeatures(rms=[0.05] * 14, block_count=1, n_channels=14)
-    )
-    client = TestClient(make_app(bus, broadcast_hz=120))
-    with client.websocket_connect("/ws") as ws:
-        msg = ws.receive_json()
-        assert "ai" in msg
-        assert msg["ai"] is None
+def test_prompt_endpoint_empty_body_is_safe() -> None:
+    """Empty body (no text key) interprets the empty string — no-op."""
+    bus = _bus_with()
+    client = TestClient(make_app(bus, state_bus=StateBus()))
+
+    r = client.post("/api/prompt", json={})
+    assert r.status_code == 200
+    assert r.json()["matched"] == []

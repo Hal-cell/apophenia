@@ -444,7 +444,11 @@
     <div class="row">
       <section class="panel fill">
         <h2><span class="accent">text</span> · prompt &amp; presets</h2>
-        <textarea id="prompt" placeholder="abstract liquid form, subtle iridescent surface…"></textarea>
+        <textarea id="prompt" placeholder="slow warm bloom · cool agitated shatter · dense pulse · fast fragmented neon …"></textarea>
+        <div class="preset-help" style="margin: 6px 0 4px;">
+          press <kbd>⏎</kbd> or <kbd>tab</kbd> to interpret ·
+          <span id="prompt-matched">no keywords matched yet</span>
+        </div>
         <div class="preset-grid" id="preset-grid"></div>
         <div class="preset-help">
           <kbd>click</kbd> recall ·
@@ -454,40 +458,36 @@
       </section>
 
       <section class="panel fill">
-        <h2><span class="accent">blends</span> · ai mix &amp; mood</h2>
+        <h2><span class="accent">motion</span> · speed · density · sensitivity · mood</h2>
         <div class="ctrl-row">
           <span class="ctrl-label">audio↔text</span>
           <input type="range" id="blend-audio_text" min="0" max="1" step="0.01" value="0.5">
           <span class="ctrl-value" id="blend-audio_text-v">0.50</span>
         </div>
         <div class="ctrl-row">
-          <span class="ctrl-label">clap↔clip</span>
-          <input type="range" id="blend-clap_clip" min="0" max="1" step="0.01" value="0.5">
-          <span class="ctrl-value" id="blend-clap_clip-v">0.50</span>
+          <span class="ctrl-label">speed</span>
+          <input type="range" id="motion-speed" min="0" max="2" step="0.01" value="1">
+          <span class="ctrl-value" id="motion-speed-v">1.00</span>
         </div>
         <div class="ctrl-row">
-          <span class="ctrl-label">shader↔ai</span>
-          <input type="range" id="blend-shader_ai" min="0" max="1" step="0.01" value="0.5">
-          <span class="ctrl-value" id="blend-shader_ai-v">0.50</span>
+          <span class="ctrl-label">density</span>
+          <input type="range" id="motion-density" min="0" max="1" step="0.01" value="0.5">
+          <span class="ctrl-value" id="motion-density-v">0.50</span>
         </div>
         <div class="ctrl-row">
-          <span class="ctrl-label">cfg</span>
-          <input type="range" id="cfg" min="1" max="12" step="0.1" value="5.0">
-          <span class="ctrl-value" id="cfg-v">5.0</span>
+          <span class="ctrl-label">sensitivity</span>
+          <input type="range" id="motion-onset_sensitivity" min="0" max="2" step="0.01" value="1">
+          <span class="ctrl-value" id="motion-onset_sensitivity-v">1.00</span>
         </div>
 
-        <div class="toggle-row" style="margin-top: 8px;">
-          <span class="ctrl-label">mood follows audio</span>
-          <div id="mood-follow" class="toggle on" role="switch"></div>
-        </div>
-        <div class="mood-pad" id="mood-pad">
+        <div class="mood-pad" id="mood-pad" style="margin-top: 12px;">
           <div class="axis-h"></div>
           <div class="axis-v"></div>
           <div class="label t">+ arousal</div>
           <div class="label b">− arousal</div>
           <div class="label l">− valence</div>
           <div class="label r">+ valence</div>
-          <div class="dot follow" id="mood-dot"></div>
+          <div class="dot" id="mood-dot"></div>
         </div>
       </section>
     </div>
@@ -687,14 +687,14 @@
   }
 
   const sliders = {
-    'blend.audio_text': bindSlider('blend-audio_text', 'blend.audio_text'),
-    'blend.clap_clip':  bindSlider('blend-clap_clip',  'blend.clap_clip'),
-    'blend.shader_ai':  bindSlider('blend-shader_ai',  'blend.shader_ai'),
-    'cfg':              bindSlider('cfg', 'cfg', (v) => v.toFixed(1)),
-    'palette.hue':        bindSlider('palette-hue',        'palette.hue'),
-    'palette.saturation': bindSlider('palette-saturation', 'palette.saturation'),
-    'fx.glitch':    bindSlider('fx-glitch',    'fx.glitch'),
-    'fx.chromatic': bindSlider('fx-chromatic', 'fx.chromatic'),
+    'blend.audio_text':         bindSlider('blend-audio_text',         'blend.audio_text'),
+    'motion.speed':             bindSlider('motion-speed',             'motion.speed'),
+    'motion.density':           bindSlider('motion-density',           'motion.density'),
+    'motion.onset_sensitivity': bindSlider('motion-onset_sensitivity', 'motion.onset_sensitivity'),
+    'palette.hue':              bindSlider('palette-hue',              'palette.hue'),
+    'palette.saturation':       bindSlider('palette-saturation',       'palette.saturation'),
+    'fx.glitch':                bindSlider('fx-glitch',                'fx.glitch'),
+    'fx.chromatic':             bindSlider('fx-chromatic',             'fx.chromatic'),
   };
 
   // ---------------------------------------------------------------- //
@@ -750,7 +750,6 @@
       },
     };
   }
-  const toggleFollow = bindToggle('mood-follow', 'mood.follow_audio');
   const toggleFreeze = bindToggle('transport-freeze', 'transport.freeze');
 
   // Kaleidoscope stepper
@@ -790,15 +789,13 @@
   // ---------------------------------------------------------------- //
   const moodPad = document.getElementById('mood-pad');
   const moodDot = document.getElementById('mood-dot');
-  let moodFollowing = true;
 
-  function updateMoodDot(valence, arousal, follow) {
+  function updateMoodDot(valence, arousal) {
     // valence ∈ [-1, 1] → x ∈ [0, 1]; arousal ∈ [-1, 1] → y (top = high)
     const x = (valence + 1) / 2 * 100;
     const y = (1 - (arousal + 1) / 2) * 100;
     moodDot.style.left = x + '%';
     moodDot.style.top = y + '%';
-    moodDot.classList.toggle('follow', follow);
   }
 
   function moodFromEvent(ev) {
@@ -827,27 +824,58 @@
   });
   function handleMood(ev) {
     const { valence, arousal } = moodFromEvent(ev);
-    updateMoodDot(valence, arousal, false);
+    updateMoodDot(valence, arousal);
     markDirty('mood');
-    // dragging the pad turns off follow_audio
-    moodFollowing = false;
-    toggleFollow.el.classList.remove('on');
-    patchState({
-      mood: { valence, arousal, follow_audio: false },
-    });
+    patchState({ mood: { valence, arousal } });
   }
 
   // ---------------------------------------------------------------- //
-  //  Prompt textarea                                                 //
+  //  Prompt textarea — interprets via /api/prompt                    //
   // ---------------------------------------------------------------- //
   const prompt = document.getElementById('prompt');
-  let promptTimer = null;
-  prompt.addEventListener('input', () => {
+  const promptMatched = document.getElementById('prompt-matched');
+
+  async function interpretPrompt() {
     markDirty('text.prompt', 600);
-    clearTimeout(promptTimer);
-    promptTimer = setTimeout(() => {
-      patchState({ text: { prompt: prompt.value } });
-    }, 250);
+    // Briefly mark every other slider dirty too — `/api/prompt` is
+    // about to overwrite a bunch of them via the interpreted diff,
+    // and we don't want our own input handlers to fight that.
+    Object.keys(sliders).forEach(k => markDirty(k, 600));
+    try {
+      const r = await fetch('/api/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: prompt.value }),
+      });
+      if (!r.ok) {
+        promptMatched.textContent = `error ${r.status}`;
+        return;
+      }
+      const data = await r.json();
+      const matched = data.matched || [];
+      if (matched.length === 0) {
+        promptMatched.textContent = 'no keywords matched (try: slow, warm, bloom, agitated, neon, …)';
+      } else {
+        promptMatched.innerHTML = 'matched: <strong>' + matched.join(' · ') + '</strong>';
+      }
+      // Clear dirty flags so the next /ws state echo flows through
+      // and re-syncs the sliders to the interpreted values.
+      dirty.clear();
+    } catch (e) {
+      promptMatched.textContent = 'connection error';
+    }
+  }
+
+  // Interpret on Enter (without shift), or Tab. Free typing while editing.
+  prompt.addEventListener('keydown', (ev) => {
+    if ((ev.key === 'Enter' && !ev.shiftKey) || ev.key === 'Tab') {
+      ev.preventDefault();
+      interpretPrompt();
+    }
+  });
+  // Also interpret on blur — matches mobile / iPad ergonomics.
+  prompt.addEventListener('blur', () => {
+    if (prompt.value.trim()) interpretPrompt();
   });
 
   // ---------------------------------------------------------------- //
@@ -929,20 +957,18 @@
     if (s.text && !dirty.has('text.prompt') && document.activeElement !== prompt) {
       if (prompt.value !== s.text.prompt) prompt.value = s.text.prompt || '';
     }
-    // blends
+    // blends + motion
     if (s.blend) {
       sliders['blend.audio_text'].set(s.blend.audio_text);
-      sliders['blend.clap_clip'].set(s.blend.clap_clip);
-      sliders['blend.shader_ai'].set(s.blend.shader_ai);
     }
-    if (s.cfg !== undefined) sliders['cfg'].set(s.cfg);
+    if (s.motion) {
+      sliders['motion.speed'].set(s.motion.speed);
+      sliders['motion.density'].set(s.motion.density);
+      sliders['motion.onset_sensitivity'].set(s.motion.onset_sensitivity);
+    }
     // mood
     if (s.mood && !dirty.has('mood')) {
-      updateMoodDot(s.mood.valence, s.mood.arousal, !!s.mood.follow_audio);
-      moodFollowing = !!s.mood.follow_audio;
-    }
-    if (s.mood && !dirty.has('mood.follow_audio')) {
-      toggleFollow.set(s.mood.follow_audio);
+      updateMoodDot(s.mood.valence, s.mood.arousal);
     }
     // channel weights
     if (s.channel_weight) setChannelWeights(s.channel_weight);

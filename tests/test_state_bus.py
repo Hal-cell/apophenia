@@ -71,10 +71,18 @@ def test_state_bus_update_partial_blend() -> None:
     bus = StateBus()
     new_state = bus.update({"blend": {"audio_text": 0.7}})
     assert new_state.blend.audio_text == 0.7
-    # Other blend fields untouched.
-    assert new_state.blend.clap_clip == 0.5
     # Other top-level fields untouched.
-    assert new_state.cfg == 5.0
+    assert new_state.motion.speed == 1.0
+    assert new_state.palette.saturation == 1.0
+
+
+def test_state_bus_update_partial_motion() -> None:
+    bus = StateBus()
+    new_state = bus.update({"motion": {"speed": 1.5, "density": 0.8}})
+    assert new_state.motion.speed == 1.5
+    assert new_state.motion.density == 0.8
+    # Other motion field untouched.
+    assert new_state.motion.onset_sensitivity == 1.0
 
 
 def test_state_bus_update_channel_weight_full_array() -> None:
@@ -99,13 +107,14 @@ def test_state_bus_update_rejects_wrong_channel_count() -> None:
 
 def test_state_bus_replace_swaps_entire_state() -> None:
     bus = StateBus()
-    new = VisualState(cfg=8.0)
+    new = VisualState()
+    new.motion.speed = 1.7
     new.blend.audio_text = 0.1
     out = bus.replace(new)
-    assert out.cfg == 8.0
+    assert out.motion.speed == 1.7
     assert out.blend.audio_text == 0.1
     # Subsequent get() reflects it.
-    assert bus.get().cfg == 8.0
+    assert bus.get().motion.speed == 1.7
 
 
 def test_state_bus_thread_safety() -> None:
@@ -132,10 +141,21 @@ def test_state_bus_thread_safety() -> None:
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 
+    # Three concurrent writers — one to blend, two to motion. Different
+    # subtrees stress the deep-merge under contention.
+    def writer_motion(field: str) -> None:
+        try:
+            for i in range(200):
+                if stop.is_set():
+                    return
+                bus.update({"motion": {field: (i % 100) / 100.0}})
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
     ws = [
         threading.Thread(target=writer, args=("audio_text",), daemon=True),
-        threading.Thread(target=writer, args=("clap_clip",), daemon=True),
-        threading.Thread(target=writer, args=("shader_ai",), daemon=True),
+        threading.Thread(target=writer_motion, args=("speed",), daemon=True),
+        threading.Thread(target=writer_motion, args=("density",), daemon=True),
     ]
     rs = [threading.Thread(target=reader, daemon=True) for _ in range(3)]
     for t in ws + rs:
@@ -156,6 +176,6 @@ def test_state_bus_update_nested_then_top_level() -> None:
     """Two consecutive partial updates compose correctly."""
     bus = StateBus()
     bus.update({"blend": {"audio_text": 0.7}})
-    s = bus.update({"cfg": 8.0})
+    s = bus.update({"motion": {"speed": 1.5}})
     assert s.blend.audio_text == 0.7  # carried over
-    assert s.cfg == 8.0
+    assert s.motion.speed == 1.5

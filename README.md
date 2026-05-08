@@ -2,9 +2,9 @@
 
 > *apophenia* — *the tendency to perceive meaningful patterns or connections in random or unrelated stimuli.*
 
-Multi-channel audio-reactive AV instrument. Listens to a Eurorack rack via Expert Sleepers ES-9 (14 channels), drives a real-time visual pipeline that fuses GLSL shaders (audio-reactive structure) with SDXL-Turbo diffusion output (text + audio-conditioned style). The performer steers the AI live via text prompts and parameter sliders rather than letting it auto-pilot.
+Multi-channel audio-reactive AV instrument. Listens to a Eurorack rack via Expert Sleepers ES-9 (14 channels), drives a real-time GLSL pipeline (5 audio-reactive shader presets composited over 14 layers, with kaleidoscope / glitch / chromatic / saturation post-FX). The performer steers the visual via text prompts that describe **motion / brightness / colour / energy trajectory** — a `PromptInterpreter` translates words like "slow warm bloom" into shader-parameter diffs.
 
-> **Status**: V1 shipped (`v1-shipped` / `v1.0.0`). All eight phases of the roadmap landed; the instrument is performable.
+> **Status**: V1.5 shipped (`v10-prompt-controller` / `v1.5.0`). The V1 SDXL-Turbo image-generation tier was replaced with a much smaller prompt → shader-parameter controller that aligns better with how the instrument is actually played: AI controls **how** the visuals move, not **what** is depicted.
 
 ## Hardware
 
