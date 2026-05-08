@@ -13,10 +13,9 @@
     --text-dim: #6a6a6a;
     --accent: #fbf2d4;
     --bar-bg: #1c1c1c;
-    --good: #5ac95a;
-    --warn: #d8c54e;
-    --hot: #d8624e;
     --peak-line: #fbf2d4;
+    --good: #5ac95a;
+    --hot: #d8624e;
   }
   * { box-sizing: border-box; }
   body {
@@ -79,20 +78,39 @@
     background: var(--bar-bg);
     overflow: hidden;
   }
+  /* The bar fill: solid colour driven by the channel's centroid (HSL
+     hue), height by RMS. Lightness gets a tiny boost on louder channels
+     so silent bars look properly dim even if their hue is set. */
   .channel .fill {
     position: absolute; left: 0; right: 0; bottom: 0;
-    background: linear-gradient(to top, var(--good) 0%, var(--good) 60%, var(--warn) 80%, var(--hot) 100%);
-    transition: height 50ms linear;
+    background: hsl(var(--hue, 100), 70%, 45%);
+    transition: height 50ms linear, background 80ms linear;
   }
   .channel .peak {
     position: absolute; left: 0; right: 0;
     height: 1.5px; background: var(--peak-line);
     transition: bottom 100ms linear;
   }
-  .channel .value {
-    text-align: center; padding: 4px 0;
+  /* Onset flash: thin bright bar at the top edge of the meter. Opacity
+     is driven directly by the per-channel onset envelope (0..1), so a
+     fresh hit reads as a bright line that fades over ~30ms. */
+  .channel .flash {
+    position: absolute; left: 0; right: 0; top: 0;
+    height: 5px;
+    background: #ffffff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+    opacity: 0;
+    transition: opacity 60ms linear;
+    pointer-events: none;
+  }
+  .channel .value, .channel .centroid {
+    text-align: center; padding: 3px 0;
     font-size: 9px; color: var(--text-dim);
     border-top: 1px solid var(--border);
+  }
+  .channel .centroid {
+    border-top: none; padding-top: 0; padding-bottom: 5px;
+    color: hsl(var(--hue, 100), 60%, 65%);
   }
   .channel.silent .label { color: var(--text-dim); opacity: 0.4; }
   .channel.silent .meter { opacity: 0.4; }
@@ -108,7 +126,7 @@
 </head>
 <body>
   <header>
-    <h1>apophenia <span class="dim">· phase 1 · level meter</span></h1>
+    <h1>apophenia <span class="dim">· phase 2 · level + centroid + onset</span></h1>
     <div id="status">
       <div class="field"><span class="label">ws:</span><span id="ws-state" class="value err">disconnected</span></div>
       <div class="field"><span class="label">source:</span><span id="src-name" class="value">—</span></div>
@@ -124,17 +142,22 @@
   </main>
 
   <footer>
-    <span>level: <code>20·log10(rms)</code> dBFS, displayed 0 = top, -60 = bottom</span>
-    <span>peak line decays slowly (300ms hold)</span>
+    <span>level: <code>20·log10(rms)</code> dBFS bar height</span>
+    <span>colour: <code>HSL(centroid)</code> — orange = bass-y, blue = bright</span>
+    <span>top flash: <code>onset envelope</code> per channel</span>
   </footer>
 
 <script>
 (() => {
   const N = 14;
-  const FLOOR_DB = -60.0;   // anything quieter than this reads as 0% bar
+  const FLOOR_DB = -60.0;
   const PEAK_HOLD_MS = 300;
 
-  // Build 14 channel cells
+  // Centroid → HSL hue. Linear is good enough for v1; consider log map
+  // (octaves) later. 50Hz → 30° (warm orange), 12kHz → 200° (cool blue).
+  const HUE_LO = 30, HUE_HI = 200;
+  const CENTROID_LO = 50.0, CENTROID_HI = 12000.0;
+
   const meters = document.getElementById('meters');
   const cells = [];
   for (let i = 0; i < N; i++) {
@@ -143,22 +166,25 @@
     c.innerHTML = `
       <div class="label">ch${i + 1}</div>
       <div class="meter">
+        <div class="flash"></div>
         <div class="fill"></div>
         <div class="peak"></div>
       </div>
-      <div class="value">–∞</div>`;
+      <div class="value">–∞</div>
+      <div class="centroid">—</div>`;
     meters.appendChild(c);
     cells.push({
       root: c,
+      flash: c.querySelector('.flash'),
       fill: c.querySelector('.fill'),
       peak: c.querySelector('.peak'),
       value: c.querySelector('.value'),
+      centroid: c.querySelector('.centroid'),
       lastPeakDb: FLOOR_DB,
       lastPeakAt: 0,
     });
   }
 
-  // Status fields
   const wsState = document.getElementById('ws-state');
   const srcName = document.getElementById('src-name');
   const srcSr = document.getElementById('src-sr');
@@ -171,15 +197,24 @@
     wsState.className = 'value ' + (ok ? 'ok' : 'err');
   }
 
-  // Linear → dB with floor
   function ampToDb(a) {
     if (a <= 0) return FLOOR_DB;
     const db = 20 * Math.log10(a);
     return db < FLOOR_DB ? FLOOR_DB : db;
   }
-  // dB → 0..1 fraction for bar height
   function dbToFrac(db) {
     return Math.max(0, Math.min(1, (db - FLOOR_DB) / (0 - FLOOR_DB)));
+  }
+  function centroidToHue(hz) {
+    if (!hz || hz < CENTROID_LO) return HUE_LO;
+    if (hz > CENTROID_HI) return HUE_HI;
+    const f = (hz - CENTROID_LO) / (CENTROID_HI - CENTROID_LO);
+    return HUE_LO + f * (HUE_HI - HUE_LO);
+  }
+  function fmtCentroid(hz) {
+    if (!hz || hz < 1) return '—';
+    if (hz >= 1000) return (hz / 1000).toFixed(1) + 'k';
+    return hz.toFixed(0);
   }
 
   let frameCount = 0;
@@ -200,6 +235,8 @@
 
     const rms = data.rms || [];
     const peak = data.peak || [];
+    const centroid = data.centroid || [];
+    const onsets = data.onset_envelope || [];
     const now = performance.now();
 
     for (let i = 0; i < N; i++) {
@@ -207,22 +244,36 @@
       const rmsDb = ampToDb(rms[i] || 0);
       const peakDb = ampToDb(peak[i] || 0);
 
-      const rmsFrac = dbToFrac(rmsDb);
-      cell.fill.style.height = (rmsFrac * 100) + '%';
+      // Bar height
+      cell.fill.style.height = (dbToFrac(rmsDb) * 100) + '%';
 
-      // Peak hold: track max db within hold window
+      // Bar hue from centroid; sticky when channel is silent
+      const c = centroid[i] || 0;
+      if (c > 0) {
+        cell.root.style.setProperty('--hue', centroidToHue(c));
+        cell.centroid.textContent = fmtCentroid(c);
+      } else {
+        cell.centroid.textContent = '—';
+      }
+
+      // Peak hold
       if (peakDb > cell.lastPeakDb || (now - cell.lastPeakAt) > PEAK_HOLD_MS) {
         cell.lastPeakDb = peakDb;
         cell.lastPeakAt = now;
       }
       cell.peak.style.bottom = (dbToFrac(cell.lastPeakDb) * 100) + '%';
 
+      // Onset flash from envelope (0..1). The envelope is published per
+      // audio block at ~94Hz and decays geometrically per block, so by
+      // the time the UI polls at 30Hz it's still partially lit.
+      const env = onsets[i] || 0;
+      cell.flash.style.opacity = env;
+
       cell.value.textContent = rmsDb <= FLOOR_DB ? '–∞' : rmsDb.toFixed(0);
       cell.root.classList.toggle('silent', (rms[i] || 0) < 1e-5);
     }
   }
 
-  // WebSocket with auto-reconnect
   let ws = null;
   let reconnectTimer = null;
 
@@ -230,11 +281,9 @@
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws`);
     setWsState('connecting…', false);
-
     ws.onopen = () => setWsState('connected', true);
     ws.onmessage = (ev) => {
-      try { render(JSON.parse(ev.data)); }
-      catch (e) { console.error('bad message', e); }
+      try { render(JSON.parse(ev.data)); } catch (e) { console.error('bad message', e); }
     };
     ws.onclose = () => {
       setWsState('disconnected — retry in 1s', false);

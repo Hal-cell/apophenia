@@ -72,7 +72,7 @@ def run(
     url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia · phase 1 running[/bold green]")
+    console.print("[bold green]apophenia · phase 2 running[/bold green]")
     console.print(f"  source:  [cyan]{type(src).__name__}[/cyan]  ({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})")
     console.print(f"  meter:   [cyan]{url}[/cyan]")
     console.print("  ws hz:   30")
