@@ -87,6 +87,34 @@ class TransportState(BaseModel):
     freeze: bool = False
 
 
+class CameraState(BaseModel):
+    """3D camera around the particle world. Phase-12 addition.
+
+    The 14 audio-channel emitters live on a ring around the origin in
+    the XZ plane; the camera looks at that origin from `distance`
+    units away, tilted up by `elevation` degrees, optionally orbiting
+    at `orbit_speed` revolutions per second.
+    """
+
+    distance: float = Field(5.0, ge=1.5, le=20.0)
+    """Camera radius from origin (the centre of the emitter ring)."""
+
+    elevation: float = Field(15.0, ge=-89.0, le=89.0)
+    """Degrees above (positive) / below the horizon."""
+
+    orbit_speed: float = Field(0.05, ge=-2.0, le=2.0)
+    """Revolutions per second when `autorotate` is on. Negative = reverse."""
+
+    fov_deg: float = Field(60.0, ge=20.0, le=120.0)
+    """Vertical field of view in degrees. Narrow → tighter, telephoto;
+    wide → fish-eye-ish."""
+
+    autorotate: bool = True
+    """Whether the camera orbits the origin continuously. When False,
+    the camera holds at the orbit angle from the most recent `time` it
+    saw — i.e. freezes in place."""
+
+
 N_CHANNELS = 14
 
 
@@ -105,6 +133,7 @@ class VisualState(BaseModel):
     palette: PaletteState = Field(default_factory=PaletteState)
     fx: FxState = Field(default_factory=FxState)
     transport: TransportState = Field(default_factory=TransportState)
+    camera: CameraState = Field(default_factory=CameraState)
 
     def model_post_init(self, __context: object) -> None:  # noqa: D401
         """Validate channel_weight length matches N_CHANNELS."""

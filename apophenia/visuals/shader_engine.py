@@ -465,9 +465,20 @@ class ApopheniaWindow(mglw.WindowConfig):
             raise RuntimeError(
                 "ApopheniaWindow.bus must be set before mglw.run_window_config"
             )
+        # Lazy import — keeps the engine-only GL tests from pulling in
+        # the particle engine when they don't need it.
+        from apophenia.visuals.particle_engine import ParticleEngine
+
         self._bus_ref: FeatureBus = ApopheniaWindow.bus
         self._state_bus_ref: StateBus | None = ApopheniaWindow.state_bus
         self.engine = ShaderEngine(self.ctx)
+        # Phase-12: 3D particle world rendered additively after the
+        # 2D shader pass into the same offscreen FBO. Always-on when
+        # state is available (no opt-out flag in V1.5).
+        self.particle_engine: ParticleEngine | None = (
+            ParticleEngine(self.ctx) if ApopheniaWindow.state_bus is not None
+            else None
+        )
         # Compositor runs whenever state is available so the kaleidoscope
         # / glitch / chromatic / saturation post-FX work. Without state,
         # we fall back to drawing shaders straight to the window — that
@@ -518,12 +529,25 @@ class ApopheniaWindow(mglw.WindowConfig):
             # window (used by tests / headless GL benchmarks).
             self.engine.render(features, render_time, self.window_size, state=state)
         else:
-            # Phase-10 path: shaders → offscreen FBO → composite post-FX →
-            # window.
+            # Phase-10/12 path: 2D shaders + 3D particles → offscreen FBO
+            # → composite post-FX → window.
             fbo = self.compositor.offscreen_fbo(self.window_size)
             fbo.use()
             self.ctx.viewport = (0, 0, *self.window_size)
             self.engine.render(features, render_time, self.window_size, state=state)
+
+            # Phase-12: render 3D particle world additively over the
+            # 2D shader output. Particle simulation advances by
+            # `frame_time` (the actual time delta between frames) so
+            # motion is independent of frame rate.
+            if self.particle_engine is not None:
+                self.particle_engine.update_and_render(
+                    features=features,
+                    time_s=render_time,
+                    dt=max(frame_time, 1e-3),
+                    resolution=self.window_size,
+                    state=state,
+                )
 
             # Switch back to the default framebuffer for the composite pass.
             self.ctx.screen.use()

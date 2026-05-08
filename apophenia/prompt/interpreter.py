@@ -149,6 +149,30 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "lingering": {"fx": {"trail": 0.65}},
     "decay":     {"fx": {"trail": 0.5}},  # mid-trail, "fading away"
 
+    # ---- 3D camera (phase 12) ---- #
+    # The 3D particle world has 14 emitters on a ring around the origin.
+    # Camera vocabulary tunes how the user views that scene.
+    "close":     {"camera": {"distance": 2.5}},
+    "near":      {"camera": {"distance": 3.0}},
+    "wide":      {"camera": {"distance": 8.0, "fov_deg": 80.0}},
+    "far":       {"camera": {"distance": 12.0}},
+    "intimate":  {"camera": {"distance": 2.5, "fov_deg": 50.0}},
+    "epic":      {"camera": {"distance": 10.0, "fov_deg": 75.0}},
+    "overhead":  {"camera": {"elevation": 70.0}},
+    "level":     {"camera": {"elevation": 0.0}},
+    "tilted":    {"camera": {"elevation": 35.0}},
+    "underground": {"camera": {"elevation": -25.0}},
+    # Orbit speed.
+    "still":     {"camera": {"autorotate": False}},
+    "orbiting":  {"camera": {"autorotate": True, "orbit_speed": 0.08}},
+    "swirling":  {"camera": {"autorotate": True, "orbit_speed": 0.18},
+                  "motion": {"speed": 1.2}},
+    "vortex":    {"camera": {"autorotate": True, "orbit_speed": 0.25},
+                  "motion": {"density": 0.85, "onset_sensitivity": 1.4}},
+    "spiral":    {"camera": {"autorotate": True, "orbit_speed": 0.15}},
+    "gentle":    {"camera": {"autorotate": True, "orbit_speed": 0.03},
+                  "motion": {"speed": 0.6}},
+
     # ---- Behaviour primitives ---- #
     "bloom":     {"motion": {"speed": 0.7, "density": 0.6,
                              "onset_sensitivity": 1.4}},
