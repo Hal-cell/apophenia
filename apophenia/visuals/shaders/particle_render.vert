@@ -4,29 +4,32 @@
 // space and computes its screen-space size + colour, which the
 // fragment stage uses to draw a soft sprite.
 //
-// Reads the same packed state as `particle_update.vert`. Per-frame
-// uniforms: MVP matrix from CameraState + a flat array of per-channel
-// hues from spectral centroid + per-channel RMS for size modulation.
+// Phase-15 reshape: `age` is now "time since the home channel last
+// onset-kicked this particle", not "time since spawn". Used as a
+// transient-flash term — particles that just got kicked render
+// brighter for a few hundred ms then settle back to the steady-state
+// brightness driven by RMS + velocity. Particles never die, never
+// despawn — they are always rendered.
 
 uniform mat4  u_mvp;
-uniform float u_resolution_y;   // for converting world-space sprite
-                                 // size to gl_PointSize
-uniform float u_centroid[14];   // Hz; mapped to hue per channel
+uniform float u_resolution_y;
+uniform float u_centroid[14];
 uniform float u_rms[14];
 
 const int   N_CHANNELS = 14;
-const float LIFETIME = 4.0;
-const float HUE_LO = 30.0;        // matches centroid_to_hue elsewhere
+const float HUE_LO = 30.0;
 const float HUE_HI = 200.0;
 const float CENTROID_LO = 50.0;
 const float CENTROID_HI = 12000.0;
+const float FLASH_DECAY_S = 0.6;   // age-since-onset over which the flash fades
 
 in vec4 in_pos_age;
 in vec4 in_vel_seed;
 
-out float v_age_norm;     // [0, 1] — fragment uses this to fade
-out float v_hue_deg;      // 0..360 from this particle's channel centroid
-out float v_intensity;    // brightness scale at fragment
+out float v_flash;        // [0, 1] transient-flash term
+out float v_hue_deg;
+out float v_intensity;    // base brightness
+out float v_speed;        // for fragment-side velocity-glow
 
 float centroid_to_hue(float hz) {
     if (hz <= CENTROID_LO) return HUE_LO;
@@ -36,8 +39,9 @@ float centroid_to_hue(float hz) {
 }
 
 void main() {
-    vec3 pos = in_pos_age.xyz;
+    vec3 pos  = in_pos_age.xyz;
     float age = in_pos_age.w;
+    vec3 vel  = in_vel_seed.xyz;
     float seed = in_vel_seed.w;
 
     int my_channel = int(seed * float(N_CHANNELS));
@@ -45,26 +49,29 @@ void main() {
     float my_rms = u_rms[my_channel];
     float my_centroid = u_centroid[my_channel];
 
-    // Project to clip space.
     gl_Position = u_mvp * vec4(pos, 1.0);
 
-    // Distance from camera in clip space → screen-size scaling. We
-    // pull -view.z out of the view-projected position before the
-    // perspective divide. gl_Position.w is roughly the view-space
-    // distance after a standard perspective projection.
+    // Sprite size: small base, scaled by RMS + flash, inversely by depth.
     float depth = max(gl_Position.w, 0.5);
+    float speed = length(vel);
 
-    // Sprite size: modest base, scaled by RMS and inversely by depth.
-    // 0.04 world units at depth 1.0 ≈ a few pixels at 1080p.
-    float world_size = 0.035 * (0.5 + my_rms * 1.4);
+    // Transient flash: 1.0 right after onset, decaying exponentially.
+    float flash = exp(-age / FLASH_DECAY_S);
+
+    // World-size in units; flash makes particles visibly puff up on hits.
+    float world_size = 0.025
+                     * (0.5 + my_rms * 1.0 + flash * 0.8 + speed * 0.2);
     gl_PointSize = clamp(
         world_size * u_resolution_y / depth,
         1.5,
-        24.0
+        20.0
     );
 
-    // Output to fragment.
-    v_age_norm = clamp(age / LIFETIME, 0.0, 1.0);
+    // Outputs.
+    v_flash = flash;
     v_hue_deg = centroid_to_hue(my_centroid);
-    v_intensity = (0.4 + my_rms * 0.9) * (1.0 - v_age_norm);
+    // Base intensity: always nonzero so silent particles still render
+    // dimly (the user wanted them persistent, not flickering off).
+    v_intensity = 0.25 + my_rms * 0.7 + flash * 0.4;
+    v_speed = speed;
 }
