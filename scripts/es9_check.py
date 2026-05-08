@@ -9,14 +9,18 @@ from apophenia.audio.device import list_devices
 
 
 def main() -> None:
-    names = list_devices()
-    if not names:
+    devs = list_devices()
+    if not devs:
         print("no input devices found.")
         return
-    print("input devices:")
-    for n in names:
-        marker = " ★" if "ES-9" in n or "BlackHole" in n else ""
-        print(f"  • {n}{marker}")
+    print(f"{'idx':>3}  {'ch':>3}   {'sr':>8}   name")
+    for d in devs:
+        name = d["name"]
+        marker = " ★" if any(s in name for s in ("ES-9", "BlackHole", "Pro Tools")) else ""
+        print(
+            f"{d['index']:>3}  {d['max_input_channels']:>3}   "
+            f"{d['default_samplerate']:>6}Hz   {name}{marker}"
+        )
 
 
 if __name__ == "__main__":
