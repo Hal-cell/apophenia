@@ -113,9 +113,13 @@ def test_clear_slot_rejects_out_of_range() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_load_returns_empty_bank_when_file_missing(tmp_path: Path) -> None:
+def test_load_returns_empty_bank_when_file_missing_use_starter_false(
+    tmp_path: Path,
+) -> None:
+    """`use_starter=False` keeps the original empty-on-missing semantics
+    that earlier tests / scripts may depend on."""
     p = tmp_path / "none.json"
-    bank = load(p)
+    bank = load(p, use_starter=False)
     assert isinstance(bank, PresetBank)
     assert all(slot.state is None for slot in bank.presets)
 
@@ -150,7 +154,7 @@ def test_load_corrupt_file_returns_empty_bank(tmp_path: Path) -> None:
     """Garbage on disk shouldn't crash the app — silently start fresh."""
     p = tmp_path / "corrupt.json"
     p.write_text("{not valid json")
-    bank = load(p)
+    bank = load(p, use_starter=False)
     assert isinstance(bank, PresetBank)
     assert all(slot.state is None for slot in bank.presets)
 
@@ -160,6 +164,68 @@ def test_load_old_version_returns_empty_bank(tmp_path: Path) -> None:
     refuse to load the V1 file, rather than coerce mismatched fields."""
     p = tmp_path / "old.json"
     p.write_text('{"version": 999, "presets": []}')
-    bank = load(p)
+    bank = load(p, use_starter=False)
     assert bank.version == PRESET_FORMAT_VERSION
     assert all(slot.state is None for slot in bank.presets)
+
+
+# --------------------------------------------------------------------------- #
+# Starter bank (Phase 8)
+# --------------------------------------------------------------------------- #
+
+
+def test_load_materialises_starter_bank_on_missing_file(tmp_path: Path) -> None:
+    """First-launch experience: no preset file → load() returns the
+    curated starter bank AND writes it to disk for the next launch."""
+    p = tmp_path / "presets.json"
+    assert not p.exists()
+    bank = load(p)
+    # 12 starters + 4 empty (PRESET_BANK_SIZE = 16).
+    full = [pr for pr in bank.presets if pr.state is not None]
+    empty = [pr for pr in bank.presets if pr.state is None]
+    assert len(full) == 12
+    assert len(empty) == 4
+    # Every full slot has a non-empty label.
+    assert all(pr.label.strip() for pr in full)
+    # Side effect: file persisted to disk.
+    assert p.exists()
+    # Re-loading reads the same labels back from disk (proving the
+    # serialised JSON round-trips cleanly).
+    bank2 = load(p)
+    assert [pr.label for pr in bank2.presets] == [pr.label for pr in bank.presets]
+
+
+def test_load_does_not_override_existing_user_file(tmp_path: Path) -> None:
+    """If the user has saved their own bank, starters must NOT clobber it."""
+    p = tmp_path / "presets.json"
+    user_bank = save_slot(PresetBank(), 0, VisualState(), label="my-thing")
+    save(user_bank, p)
+
+    loaded = load(p)
+    assert loaded.presets[0].label == "my-thing"
+    # Slot 1 in the starter bank would be "paper"; the user's file has
+    # this slot empty, so the starter MUST NOT have leaked in.
+    assert loaded.presets[1].state is None
+
+
+def test_load_starter_includes_known_presets(tmp_path: Path) -> None:
+    """Spot-check a couple of starter labels so we'll notice if the bank
+    silently goes empty (e.g., import order regression)."""
+    p = tmp_path / "presets.json"
+    bank = load(p)
+    labels = {pr.label for pr in bank.presets if pr.state is not None}
+    assert "bloom" in labels
+    assert "cathedral" in labels
+    assert "neon_city" in labels
+
+
+def test_starter_bank_validates_against_schema() -> None:
+    """If a starter ever drifts out of the VisualState schema (e.g., a
+    field gets tightened), this test fires before the bank ships."""
+    from apophenia.control.starter_presets import starter_presets_dict
+
+    # starter_presets_dict() raises Pydantic ValidationError on schema
+    # drift; just calling it is the test.
+    bank_dict = starter_presets_dict()
+    assert bank_dict["version"] == PRESET_FORMAT_VERSION
+    assert len(bank_dict["presets"]) == PRESET_BANK_SIZE

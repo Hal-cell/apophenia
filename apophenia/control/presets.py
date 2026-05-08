@@ -52,21 +52,47 @@ def default_path() -> Path:
     return Path.home() / ".config" / "apophenia" / "presets.json"
 
 
-def load(path: Path | None = None) -> PresetBank:
-    """Read the preset bank from disk; return a fresh empty bank if
-    the file doesn't exist yet, or if it's from an incompatible
-    `version` (rather than crash, we let users start over).
+def load(path: Path | None = None, use_starter: bool = True) -> PresetBank:
+    """Read the preset bank from disk.
+
+    On missing file we materialise the curated 12-slot starter bank
+    (see `starter_presets.STARTER_DATA`) and persist it so the next
+    launch reads the user's own (now-editable) file. Pass
+    `use_starter=False` for tests that want a clean empty bank without
+    spilling starter content into a temp dir.
+
+    On corrupt files or version mismatch we *also* fall back to the
+    starter — giving up the user's broken file is better than crashing
+    on every launch, and using the starters at this fork point keeps
+    first-run and recovery experiences consistent.
     """
     p = path or default_path()
     if not p.exists():
+        if use_starter:
+            bank = _starter_bank()
+            try:
+                save(bank, p)
+            except OSError:
+                # Read-only fs / permissions → just return in-memory bank.
+                pass
+            return bank
         return PresetBank()
     try:
         bank = PresetBank.model_validate_json(p.read_text())
-    except Exception:  # noqa: BLE001 — corrupt file → silently restart
-        return PresetBank()
+    except Exception:  # noqa: BLE001 — corrupt file → starter / empty
+        return _starter_bank() if use_starter else PresetBank()
     if bank.version != PRESET_FORMAT_VERSION:
-        return PresetBank()
+        return _starter_bank() if use_starter else PresetBank()
     return bank
+
+
+def _starter_bank() -> PresetBank:
+    """Build a `PresetBank` from `starter_presets.STARTER_DATA`."""
+    # Lazy import keeps `presets` cold import light + avoids circular
+    # imports with `apophenia.state`.
+    from apophenia.control.starter_presets import starter_presets_dict
+
+    return PresetBank.model_validate(starter_presets_dict())
 
 
 def save(bank: PresetBank, path: Path | None = None) -> None:

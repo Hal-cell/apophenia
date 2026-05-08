@@ -169,7 +169,8 @@ def test_patch_state_text_prompt() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_get_presets_initially_empty(tmp_path: Path) -> None:
+def test_get_presets_initially_loads_starter_bank(tmp_path: Path) -> None:
+    """First-launch experience: 12 starter slots filled, 4 empty."""
     bus = _bus_with()
     client = TestClient(make_app(bus, preset_path=tmp_path / "presets.json"))
     r = client.get("/api/presets")
@@ -177,7 +178,10 @@ def test_get_presets_initially_empty(tmp_path: Path) -> None:
     body = r.json()
     assert body["version"] == 1
     assert len(body["presets"]) == 16
-    assert all(p["state"] is None for p in body["presets"])
+    full = [p for p in body["presets"] if p["state"] is not None]
+    empty = [p for p in body["presets"] if p["state"] is None]
+    assert len(full) == 12
+    assert len(empty) == 4
 
 
 def test_save_recall_clear_round_trip(tmp_path: Path) -> None:
@@ -188,33 +192,36 @@ def test_save_recall_clear_round_trip(tmp_path: Path) -> None:
         make_app(bus, state_bus=state_bus, preset_path=tmp_path / "presets.json")
     )
 
-    # Save current state into slot 3 with a label.
-    r = client.post("/api/presets/3/save", json={"label": "cathedral"})
+    # Save current state into slot 13 with a distinctive label (slot 13 is
+    # empty in the starter bank, so we know we're testing fresh-save).
+    r = client.post("/api/presets/13/save", json={"label": "user-test-save"})
     assert r.status_code == 200
     body = r.json()
-    assert body["presets"][3]["label"] == "cathedral"
-    assert body["presets"][3]["state"]["blend"]["audio_text"] == 0.7
+    assert body["presets"][13]["label"] == "user-test-save"
+    assert body["presets"][13]["state"]["blend"]["audio_text"] == 0.7
     # File on disk too.
     assert (tmp_path / "presets.json").exists()
 
     # Mutate state, then recall — should restore.
     state_bus.update({"blend": {"audio_text": 0.1}, "cfg": 3.0})
     assert state_bus.get().cfg == 3.0
-    r = client.post("/api/presets/3/recall")
+    r = client.post("/api/presets/13/recall")
     assert r.status_code == 200
     assert r.json()["blend"]["audio_text"] == 0.7
     assert state_bus.get().cfg == 8.0
 
     # Clear it.
-    r = client.post("/api/presets/3/clear")
+    r = client.post("/api/presets/13/clear")
     assert r.status_code == 200
-    assert r.json()["presets"][3]["state"] is None
+    assert r.json()["presets"][13]["state"] is None
 
 
 def test_recall_empty_slot_returns_404(tmp_path: Path) -> None:
+    """Slot 15 is always empty in the starter bank — perfect for the
+    "empty" 404 contract."""
     bus = _bus_with()
     client = TestClient(make_app(bus, preset_path=tmp_path / "presets.json"))
-    r = client.post("/api/presets/0/recall")
+    r = client.post("/api/presets/15/recall")
     assert r.status_code == 404
 
 

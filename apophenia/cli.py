@@ -173,7 +173,7 @@ def run(
     url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia · phase 7 running[/bold green]")
+    console.print("[bold green]apophenia v1.0 · running[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
@@ -342,6 +342,76 @@ def smoke(
             console.print(f"  {ch + 1:>2}  {r:6.4f}  {p:5.3f}  {bar}")
     finally:
         src.close()
+
+
+@app.command()
+def version() -> None:
+    """Print apophenia + key dep versions and the active Python interpreter."""
+    import importlib.metadata as md
+    import platform
+    import sys
+
+    try:
+        ver = md.version("apophenia")
+    except md.PackageNotFoundError:
+        ver = "unknown (not installed)"
+
+    console.print(f"[bold]apophenia[/bold] {ver}")
+    console.print(f"  python:      {platform.python_version()} ({sys.executable})")
+    console.print(f"  platform:    {platform.system()} {platform.machine()}")
+
+    def _pkg(name: str) -> str:
+        try:
+            return md.version(name)
+        except md.PackageNotFoundError:
+            return "[dim]not installed[/dim]"
+
+    console.print(f"  numpy:       {_pkg('numpy')}")
+    console.print(f"  fastapi:     {_pkg('fastapi')}")
+    console.print(f"  pydantic:    {_pkg('pydantic')}")
+    console.print(f"  sounddevice: {_pkg('sounddevice')}")
+    console.print(f"  moderngl:    {_pkg('moderngl')}    (visuals extra)")
+    console.print(f"  torch:       {_pkg('torch')}    (ai extra)")
+    console.print(f"  diffusers:   {_pkg('diffusers')}    (ai extra)")
+    console.print(f"  transformers:{_pkg('transformers')}    (ai extra)")
+
+
+@app.command()
+def config() -> None:
+    """Print the resolved paths apophenia uses (preset bank, default audio
+    device, etc.). Useful for debugging where state actually lives.
+    """
+    from apophenia.control.presets import default_path
+
+    preset_path = default_path()
+
+    console.print("[bold]apophenia · resolved paths[/bold]")
+    console.print(f"  presets:     [cyan]{preset_path}[/cyan]")
+    console.print(
+        f"               [dim]({'exists' if preset_path.exists() else 'will be created on first run'})[/dim]"
+    )
+
+    # Default audio device — only meaningful when sounddevice is importable.
+    console.print()
+    console.print("[bold]default audio source:[/bold]")
+    try:
+        from apophenia.audio.device import list_devices
+
+        devs = list_devices()
+        if not devs:
+            console.print("  [red]no input devices visible[/red]")
+        else:
+            primary = devs[0]
+            console.print(
+                f"  [cyan]{primary['name']}[/cyan]  "
+                f"({primary['max_input_channels']}ch @ "
+                f"{primary['default_samplerate']:.0f}Hz, idx {primary['index']})"
+            )
+            console.print(
+                "  [dim]list all with: apophenia devices[/dim]"
+            )
+    except Exception as e:  # noqa: BLE001
+        console.print(f"  [red]sounddevice unavailable:[/red] {e}")
 
 
 def main() -> None:
