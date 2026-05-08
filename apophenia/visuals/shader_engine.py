@@ -34,6 +34,7 @@ import moderngl_window as mglw
 import numpy as np
 
 if TYPE_CHECKING:
+    from apophenia.ai.bus import AIBus, AIFrame
     from apophenia.audio.features_fast import FastFeatures, FeatureBus
     from apophenia.control.state_bus import StateBus
     from apophenia.state import VisualState
@@ -230,6 +231,128 @@ def _set_uniform(program: moderngl.Program, name: str, value: object) -> None:
         return
 
 
+# ---- AI compositor ---- #
+
+
+class Compositor:
+    """Final-stage composite: blend the shader-engine FBO with the AI texture.
+
+    Owns three GL resources:
+      * an offscreen colour FBO that ShaderEngine renders into instead of
+        the window's default framebuffer
+      * an AI texture that we upload from CPU each time AIBus has a fresh
+        frame (uploads are slow; we skip them when `gen_count` hasn't moved)
+      * a fragment-shader Program (`composite.frag`) that mixes the two
+
+    The offscreen FBO size follows the window — we recreate it lazily if
+    it's queried with a new size. Window resize on mglw 3.x doesn't notify
+    us, so this is the cheapest reliable approach.
+    """
+
+    def __init__(self, ctx: moderngl.Context, ai_resolution: int = 512) -> None:
+        self.ctx = ctx
+        self.ai_resolution = ai_resolution
+
+        # Composite program (single fragment shader sharing quad.vert)
+        vert_src = (SHADER_DIR / "quad.vert").read_text()
+        frag_src = (SHADER_DIR / "composite.frag").read_text()
+        self.program = ctx.program(vertex_shader=vert_src, fragment_shader=frag_src)
+
+        quad_vertices = np.array(
+            [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0],
+            dtype="f4",
+        )
+        self.vbo = ctx.buffer(quad_vertices.tobytes())
+        self.vao = ctx.simple_vertex_array(self.program, self.vbo, "in_pos")
+
+        # Bind sampler units explicitly so the fragment shader can `texture()`
+        # on `u_shader_tex` (unit 0) and `u_ai_tex` (unit 1).
+        _set_uniform(self.program, "u_shader_tex", 0)
+        _set_uniform(self.program, "u_ai_tex", 1)
+
+        # Offscreen FBO + colour texture; lazily recreated on resize.
+        self._fbo_size: tuple[int, int] = (0, 0)
+        self._shader_tex: moderngl.Texture | None = None
+        self._fbo: moderngl.Framebuffer | None = None
+
+        # AI texture: uploaded from CPU when a new AIFrame is published.
+        # Default to a 1x1 black pixel so the shader has something valid
+        # to sample before SDXL has produced anything.
+        self.ai_texture = ctx.texture((1, 1), components=3, dtype="f1")
+        self.ai_texture.write(b"\x00\x00\x00")
+        self.ai_texture.build_mipmaps()
+        self.ai_texture.repeat_x = False
+        self.ai_texture.repeat_y = False
+        self.ai_texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        self._last_ai_gen = 0
+
+    def offscreen_fbo(self, size: tuple[int, int]) -> moderngl.Framebuffer:
+        """Return the offscreen FBO, recreating it if `size` changed."""
+        if size != self._fbo_size or self._fbo is None:
+            if self._shader_tex is not None:
+                self._shader_tex.release()
+            if self._fbo is not None:
+                self._fbo.release()
+            self._shader_tex = self.ctx.texture(size, components=4, dtype="f1")
+            self._shader_tex.repeat_x = False
+            self._shader_tex.repeat_y = False
+            self._shader_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._fbo = self.ctx.framebuffer(color_attachments=[self._shader_tex])
+            self._fbo_size = size
+        return self._fbo
+
+    def maybe_upload_ai_frame(self, frame: AIFrame | None) -> bool:
+        """Upload `frame.image` to the AI texture if it's a new generation.
+
+        Returns True iff we actually uploaded (caller can use this for
+        telemetry / logging). Texture upload at 512x512 RGB is ~1ms on
+        M3 Max so doing it once per fresh AI frame is fine.
+        """
+        if frame is None or frame.image is None:
+            return False
+        if frame.gen_count == self._last_ai_gen:
+            return False
+        h, w = int(frame.image.shape[0]), int(frame.image.shape[1])
+        if (w, h) != self.ai_texture.size:
+            self.ai_texture.release()
+            self.ai_texture = self.ctx.texture((w, h), components=3, dtype="f1")
+            self.ai_texture.repeat_x = False
+            self.ai_texture.repeat_y = False
+            self.ai_texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        # numpy default layout for (H, W, 3) uint8 is C-contiguous; tobytes
+        # gives us tightly packed RGB the GL driver expects.
+        self.ai_texture.write(frame.image.tobytes())
+        self._last_ai_gen = frame.gen_count
+        return True
+
+    def render(
+        self,
+        blend: float,
+        saturation: float,
+        has_ai: bool,
+    ) -> None:
+        """Draw the composite to the currently-bound framebuffer.
+
+        Caller must have already drawn the shader pass into `offscreen_fbo`.
+        The default framebuffer should be bound on entry so this writes
+        to the visible window.
+        """
+        # The composite pass is fully opaque — disable blending so a
+        # leftover ADD_ALPHA from the shader pass doesn't affect us.
+        self.ctx.disable(moderngl.BLEND)
+
+        if self._shader_tex is None:
+            return  # offscreen_fbo() never called; nothing to composite
+        self._shader_tex.use(location=0)
+        self.ai_texture.use(location=1)
+
+        _set_uniform(self.program, "u_blend", float(blend))
+        _set_uniform(self.program, "u_saturation", float(saturation))
+        _set_uniform(self.program, "u_has_ai", 1.0 if has_ai else 0.0)
+
+        self.vao.render(moderngl.TRIANGLE_STRIP)
+
+
 # ---- moderngl_window glue ---- #
 
 
@@ -253,6 +376,7 @@ class ApopheniaWindow(mglw.WindowConfig):
     # Set externally before the window launches.
     bus: FeatureBus | None = None
     state_bus: StateBus | None = None
+    ai_bus: AIBus | None = None
     fps_log_period_s: float = 5.0
 
     def __init__(self, **kwargs: object) -> None:
@@ -263,7 +387,13 @@ class ApopheniaWindow(mglw.WindowConfig):
             )
         self._bus_ref: FeatureBus = ApopheniaWindow.bus
         self._state_bus_ref: StateBus | None = ApopheniaWindow.state_bus
+        self._ai_bus_ref: AIBus | None = ApopheniaWindow.ai_bus
         self.engine = ShaderEngine(self.ctx)
+        # Compositor only spins up when AI is enabled; without it we keep
+        # the phase-3 fast path of drawing shaders straight to the window.
+        self.compositor: Compositor | None = (
+            Compositor(self.ctx) if self._ai_bus_ref is not None else None
+        )
         self._frame_count = 0
         self._fps_t0 = time.monotonic()
         self._fps_min = math.inf
@@ -273,10 +403,11 @@ class ApopheniaWindow(mglw.WindowConfig):
         self._frozen_features: FastFeatures | None = None
         self._frozen_time: float = 0.0
         logger.info(
-            "ShaderEngine ready: %d layers across %d presets%s",
+            "ShaderEngine ready: %d layers across %d presets%s%s",
             len(self.engine.layers),
             len(self.engine.programs),
             "" if self._state_bus_ref is None else " (state-driven)",
+            " + AI compositor" if self.compositor is not None else "",
         )
 
     def on_render(self, time_s: float, frame_time: float) -> None:
@@ -300,7 +431,28 @@ class ApopheniaWindow(mglw.WindowConfig):
             self._frozen_features = features
             self._frozen_time = time_s
 
-        self.engine.render(features, render_time, self.window_size, state=state)
+        if self.compositor is None:
+            # Phase-3 fast path: shaders go straight to the window.
+            self.engine.render(features, render_time, self.window_size, state=state)
+        else:
+            # Phase-6 path: shaders → offscreen FBO → composite with AI texture
+            # → window.
+            fbo = self.compositor.offscreen_fbo(self.window_size)
+            fbo.use()
+            self.ctx.viewport = (0, 0, *self.window_size)
+            self.engine.render(features, render_time, self.window_size, state=state)
+
+            # Pull the latest AI frame and upload if it's a new generation.
+            ai_frame = self._ai_bus_ref.latest() if self._ai_bus_ref is not None else None
+            self.compositor.maybe_upload_ai_frame(ai_frame)
+
+            # Switch back to the default framebuffer for the composite pass.
+            self.ctx.screen.use()
+            self.ctx.viewport = (0, 0, *self.window_size)
+            blend = state.blend.shader_ai if state is not None else 0.0
+            saturation = state.palette.saturation if state is not None else 1.0
+            has_ai = ai_frame is not None
+            self.compositor.render(blend=blend, saturation=saturation, has_ai=has_ai)
 
         self._frame_count += 1
         now = time.monotonic()

@@ -425,6 +425,7 @@
       <div class="field"><span class="label">blocks:</span><span id="src-count" class="value">0</span></div>
       <div class="field"><span class="label">ui fps:</span><span id="ui-fps" class="value">0</span></div>
       <div class="field"><span class="label">clap:</span><span id="clap-state" class="value">off</span></div>
+      <div class="field"><span class="label">ai:</span><span id="ai-state" class="value">off</span></div>
     </div>
   </header>
 
@@ -606,6 +607,7 @@
   const clapState = document.getElementById('clap-state');
   const clapMeta = document.getElementById('clap-meta');
   const clapHeat = document.getElementById('clap-heat');
+  const aiState = document.getElementById('ai-state');
 
   const CLAP_BARS = 32;
   const clapCells = [];
@@ -1025,10 +1027,28 @@
     }
 
     renderClap(data.slow);
+    renderAi(data.ai);
 
     // Sync controls from server's authoritative state. Dirty flags
     // protect controls the user is currently dragging.
     applyState(data.state);
+  }
+
+  function renderAi(ai) {
+    if (ai === null || ai === undefined) {
+      // AI tier disabled (--no-ai or omitted).
+      aiState.textContent = 'off';
+      aiState.className = 'value';
+      return;
+    }
+    if (!ai.gen_count) {
+      // AI on but warming up (model load + first inference).
+      aiState.textContent = 'warming up…';
+      aiState.className = 'value';
+      return;
+    }
+    aiState.textContent = `gen #${ai.gen_count} · ${ai.latency_ms.toFixed(0)}ms`;
+    aiState.className = 'value ok';
   }
 
   function renderClap(slow) {

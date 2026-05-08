@@ -68,5 +68,14 @@ warn_return_any = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["sounddevice", "soundfile", "moderngl", "moderngl_window"]
+module = [
+    "sounddevice",
+    "soundfile",
+    "moderngl",
+    "moderngl_window",
+    "diffusers",
+    "diffusers.*",
+    "accelerate",
+    "accelerate.*",
+]
 ignore_missing_imports = true

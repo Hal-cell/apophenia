@@ -176,6 +176,150 @@ def test_engine_render_produces_nonblack_output() -> None:
         ctx.release()
 
 
+def test_compositor_blend_zero_returns_shader_color() -> None:
+    """blend=0 + has_ai=1: the composite output must equal the shader FBO
+    contents (the AI texture should be ignored)."""
+    import numpy as np
+
+    from apophenia.ai.bus import AIFrame
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        size = (32, 32)
+        fbo = comp.offscreen_fbo(size)
+
+        # Paint the offscreen FBO solid red.
+        fbo.use()
+        ctx.clear(1.0, 0.0, 0.0, 1.0)
+        ctx.viewport = (0, 0, *size)
+
+        # Upload a solid-blue AI frame.
+        blue = np.zeros((16, 16, 3), dtype=np.uint8)
+        blue[..., 2] = 255
+        comp.maybe_upload_ai_frame(AIFrame(image=blue, gen_count=1))
+
+        # Render composite to a separate output FBO.
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        out_fbo = ctx.framebuffer(color_attachments=[out_tex])
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(blend=0.0, saturation=1.0, has_ai=True)
+
+        raw = out_fbo.read(components=4, dtype="f1")
+        # Sample the centre pixel: red dominates, blue near zero.
+        cx, cy = size[0] // 2, size[1] // 2
+        idx = (cy * size[0] + cx) * 4
+        assert raw[idx] >= 240, f"R should be ~255 at centre, got {raw[idx]}"
+        assert raw[idx + 2] <= 15, f"B should be ~0 at centre, got {raw[idx + 2]}"
+    finally:
+        ctx.release()
+
+
+def test_compositor_blend_one_returns_ai_color() -> None:
+    """blend=1 + has_ai=1: the composite output must equal the AI texture."""
+    import numpy as np
+
+    from apophenia.ai.bus import AIFrame
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        size = (32, 32)
+        fbo = comp.offscreen_fbo(size)
+
+        fbo.use()
+        ctx.clear(1.0, 0.0, 0.0, 1.0)  # red shader
+        ctx.viewport = (0, 0, *size)
+
+        blue = np.zeros((16, 16, 3), dtype=np.uint8)
+        blue[..., 2] = 255
+        comp.maybe_upload_ai_frame(AIFrame(image=blue, gen_count=1))
+
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        out_fbo = ctx.framebuffer(color_attachments=[out_tex])
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(blend=1.0, saturation=1.0, has_ai=True)
+
+        raw = out_fbo.read(components=4, dtype="f1")
+        cx, cy = size[0] // 2, size[1] // 2
+        idx = (cy * size[0] + cx) * 4
+        assert raw[idx] <= 15, f"R should be ~0 at centre, got {raw[idx]}"
+        assert raw[idx + 2] >= 240, f"B should be ~255 at centre, got {raw[idx + 2]}"
+    finally:
+        ctx.release()
+
+
+def test_compositor_has_ai_zero_falls_back_to_shader() -> None:
+    """has_ai=0 (no AI frame yet) → composite ignores blend, shader wins."""
+    import numpy as np
+
+    from apophenia.ai.bus import AIFrame
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        size = (16, 16)
+        fbo = comp.offscreen_fbo(size)
+
+        fbo.use()
+        ctx.clear(1.0, 0.0, 0.0, 1.0)  # red shader
+        ctx.viewport = (0, 0, *size)
+
+        # Upload a blue AI frame so the texture is non-default — but we
+        # tell render() that AI isn't really active yet.
+        blue = np.full((16, 16, 3), [0, 0, 255], dtype=np.uint8)
+        comp.maybe_upload_ai_frame(AIFrame(image=blue, gen_count=1))
+
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        out_fbo = ctx.framebuffer(color_attachments=[out_tex])
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        # blend=1 would ordinarily show 100% AI, but has_ai=False forces 0.
+        comp.render(blend=1.0, saturation=1.0, has_ai=False)
+
+        raw = out_fbo.read(components=4, dtype="f1")
+        cx, cy = size[0] // 2, size[1] // 2
+        idx = (cy * size[0] + cx) * 4
+        # Shader red should win.
+        assert raw[idx] >= 240, f"R should be ~255 at centre, got {raw[idx]}"
+    finally:
+        ctx.release()
+
+
+def test_compositor_skips_redundant_ai_uploads() -> None:
+    """Same gen_count → no upload. New gen_count → upload."""
+    import numpy as np
+
+    from apophenia.ai.bus import AIFrame
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        f1 = AIFrame(image=np.zeros((4, 4, 3), dtype=np.uint8), gen_count=1)
+        f1_again = AIFrame(image=np.zeros((4, 4, 3), dtype=np.uint8), gen_count=1)
+        f2 = AIFrame(image=np.zeros((4, 4, 3), dtype=np.uint8), gen_count=2)
+        assert comp.maybe_upload_ai_frame(f1) is True
+        assert comp.maybe_upload_ai_frame(f1_again) is False
+        assert comp.maybe_upload_ai_frame(f2) is True
+        assert comp.maybe_upload_ai_frame(None) is False
+    finally:
+        ctx.release()
+
+
 def test_engine_render_with_zero_channel_weights_is_black() -> None:
     """When all channel weights are 0, every layer's u_channel_weight is
     zero, so shaders multiply to nothing → frame is solid black.
