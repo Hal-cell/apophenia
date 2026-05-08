@@ -1,0 +1,70 @@
+[project]
+name = "apophenia"
+version = "0.0.0"
+description = "Multi-channel audio-reactive AV instrument with AI visual generation"
+authors = [{ name = "Hal Xu" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Base deps cover phases 0–2 (audio sources, fast features, OSC, control UI).
+# Visual + AI deps are extras so cold-install is fast and the dev loop on a
+# new machine doesn't have to download torch + diffusers up front.
+dependencies = [
+    "numpy>=1.26",
+    "sounddevice>=0.4.6",
+    "soundfile>=0.12",
+    "python-osc>=1.8",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+    "typer>=0.9",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+visuals = [
+    "moderngl>=5.10",
+    "moderngl-window>=2.4",
+]
+ai = [
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "diffusers>=0.27",
+    "transformers>=4.40",
+    "accelerate>=0.28",
+    "safetensors>=0.4",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.3",
+    "mypy>=1.9",
+]
+
+[project.scripts]
+apophenia = "apophenia.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["apophenia"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["sounddevice", "soundfile", "moderngl", "moderngl_window"]
+ignore_missing_imports = true

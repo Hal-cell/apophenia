@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / venv
+.venv/
+.uv-cache/
+uv.lock
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local data
+.env
+.env.local
+~/.config/apophenia/   # this lives outside but just in case
+bench-results.json
+*.log
+
+# Models cache (HuggingFace puts them in ~/.cache by default; just in case)
+models/
+*.safetensors
+*.bin
+
+# Recordings + screenshots
+recordings/
+screenshots/
+*.mp4
+*.mov
+*.png
+!docs/**/*.png
