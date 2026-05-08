@@ -185,6 +185,7 @@ def run(
 
     ApopheniaWindow.bus = bus
     ApopheniaWindow.state_bus = state_bus
+    ApopheniaWindow.slow_bus = slow_bus
 
     # Bug workaround: moderngl_window's parse_args does
     # `args or sys.argv[1:]` (line 384, mglw 3.1.1), and an empty list

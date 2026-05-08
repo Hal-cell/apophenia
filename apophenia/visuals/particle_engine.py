@@ -37,6 +37,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from apophenia.audio.features_fast import FastFeatures
+    from apophenia.audio.features_slow import SlowFeatures
     from apophenia.state import VisualState
 
 SHADER_DIR = Path(__file__).parent / "shaders"
@@ -188,11 +189,15 @@ class ParticleEngine:
         dt: float,
         resolution: tuple[int, int],
         state: VisualState | None = None,
+        slow: SlowFeatures | None = None,
     ) -> None:
         """One simulation step + one render pass.
 
-        Skips silently if `features` is None (audio bus not yet
-        populated) or if `state` is None (no camera state to derive
+        `slow` (phase-13) carries the CLAP embedding norm; when None
+        (CLAP off / pre-warmup) the audio_norm uniform falls back to 0
+        and the flow field still works on RMS / onsets alone.
+
+        Skips silently if `state` is None (no camera state to derive
         an MVP from)."""
         if state is None:
             return
@@ -205,6 +210,19 @@ class ParticleEngine:
         if weight.size != 14:
             weight = np.ones(14, dtype=np.float32)
 
+        # Phase-13 audio energy scalars: a single "loudness" number for
+        # flow-field strength, plus the CLAP embedding norm for slow
+        # timbre tracking. Multiplied by per-channel weight so a muted
+        # channel can't push the overall energy up.
+        weighted_rms = rms * weight
+        audio_intensity = float(np.clip(weighted_rms.mean() * 1.4, 0.0, 1.0))
+        weighted_onset = onset * weight
+        onset_avg = float(np.clip(weighted_onset.mean(), 0.0, 1.0))
+        audio_norm = float(slow.embedding_norm) if slow is not None else 0.0
+        # CLAP norms are typically ~1 (the model L2-normalises); damp to
+        # a useful 0..1 range with a soft-knee.
+        audio_norm = float(np.clip(audio_norm * 0.5, 0.0, 1.0))
+
         # ---- Update pass ---- #
         self._upload_update_uniforms(
             dt=dt, time_s=time_s,
@@ -213,6 +231,8 @@ class ParticleEngine:
             speed_scale=float(state.motion.speed),
             onset_gain=float(state.motion.onset_sensitivity)
                        * (1.0 + 0.5 * float(state.mood.arousal)),
+            audio_intensity=audio_intensity,
+            audio_norm=audio_norm,
         )
 
         write_idx = 1 - self._read_idx
@@ -227,10 +247,17 @@ class ParticleEngine:
         self._read_idx = write_idx
 
         # ---- Render pass ---- #
-        # Camera matrix.
+        # Camera matrix. Phase-13: mood + audio modulate the orbit
+        # speed and elevation at runtime — `mood.arousal` boosts orbit
+        # rate in proportion to audio_intensity (so the camera "leans
+        # into" loud sections), and the per-frame onset average gives
+        # a small upward elevation kick (mild camera-shake on hits).
         cam = state.camera
-        azimuth = (time_s * cam.orbit_speed * 6.2831853) if cam.autorotate else 0.0
-        eye = camera_eye(cam.distance, cam.elevation, azimuth)
+        arousal = float(state.mood.arousal)
+        eff_orbit = cam.orbit_speed * (1.0 + 0.6 * arousal * audio_intensity)
+        eff_elevation = cam.elevation + onset_avg * 4.0 * max(arousal, 0.0)
+        azimuth = (time_s * eff_orbit * 6.2831853) if cam.autorotate else 0.0
+        eye = camera_eye(cam.distance, eff_elevation, azimuth)
         view = look_at_matrix(eye, (0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
         aspect = max(resolution[0] / max(resolution[1], 1), 0.01)
         proj = perspective_matrix(cam.fov_deg, aspect, near=0.1, far=50.0)
@@ -289,6 +316,8 @@ class ParticleEngine:
         density: float,
         speed_scale: float,
         onset_gain: float,
+        audio_intensity: float,
+        audio_norm: float,
     ) -> None:
         prog = self.update_program
         _set(prog, "u_dt", float(dt))
@@ -296,6 +325,8 @@ class ParticleEngine:
         _set(prog, "u_density", density)
         _set(prog, "u_speed_scale", speed_scale)
         _set(prog, "u_onset_gain", onset_gain)
+        _set(prog, "u_audio_intensity", float(audio_intensity))
+        _set(prog, "u_audio_norm", float(audio_norm))
         # Array uniforms: moderngl accepts a tuple of floats.
         _set_array(prog, "u_rms", rms)
         _set_array(prog, "u_onset", onset)

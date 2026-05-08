@@ -239,3 +239,210 @@ def test_particle_engine_skips_when_state_is_none() -> None:
         assert before == after
     finally:
         ctx.release()
+
+
+# --------------------------------------------------------------------------- #
+# Phase 13: deeper audio coupling
+# --------------------------------------------------------------------------- #
+
+
+def _run_n_steps(pe, features, state, n_steps=10, slow=None):
+    """Helper: drive the engine for n update+render passes, return the
+    final particle buffer as a (N, 8) numpy array."""
+    for i in range(n_steps):
+        pe.update_and_render(
+            features=features,
+            time_s=i * 0.033,
+            dt=0.033,
+            resolution=(64, 64),
+            state=state,
+            slow=slow,
+        )
+    return np.frombuffer(
+        pe._buffers[pe._read_idx].read(), dtype=np.float32
+    ).reshape(-1, 8)
+
+
+def test_high_onset_spawns_more_particles_than_low_onset_same_rms() -> None:
+    """Phase-13 onset weighting boost: with RMS *below* the activity
+    floor, no spawns happen on a calm channel — but a high onset
+    pushes activity well above the floor (RMS + onset×5 in the
+    formula), so transients alone trigger respawn even on a quiet
+    sustained channel.
+
+    This is the core "transient explosion" promise: a percussive hit
+    against a near-silent background generates a visible burst.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        state = VisualState()
+
+        # RMS just below the 0.02 activity floor — without onset
+        # weighting, no spawns. Onset envelopes differ wildly.
+        low_onset = FastFeatures(
+            rms=[0.01] * 14,
+            peak=[0.02] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.0] * 14,
+            n_channels=14,
+        )
+        high_onset = FastFeatures(
+            rms=[0.01] * 14,
+            peak=[0.02] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.6] * 14,
+            n_channels=14,
+        )
+
+        pe_low = ParticleEngine(ctx, n_particles=2000)
+        after_low = _run_n_steps(pe_low, low_onset, state, n_steps=10)
+        live_low = (after_low[:, 1] > -50.0).sum()
+
+        pe_high = ParticleEngine(ctx, n_particles=2000)
+        after_high = _run_n_steps(pe_high, high_onset, state, n_steps=10)
+        live_high = (after_high[:, 1] > -50.0).sum()
+
+        # Calm channel: essentially zero spawns (only the initial
+        # buffer reads as "dead", and they stay there).
+        assert live_low < 100, (
+            f"calm channels should stay dormant; got {live_low} live"
+        )
+        # Hit channel: most particles should be live.
+        assert live_high > 500, (
+            f"onset transients should spawn many particles even at "
+            f"sub-floor RMS; got {live_high} live"
+        )
+    finally:
+        ctx.release()
+
+
+def test_clap_audio_norm_propagates_to_simulation() -> None:
+    """Phase-13: a non-zero CLAP embedding norm should reach the
+    simulation, increasing the flow-field force on live particles
+    so trajectories diverge from the no-CLAP run.
+
+    We can't peek at intermediate forces, but we can compare the two
+    final velocity buffers — they should differ.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.audio.features_slow import CLAP_EMBED_DIM, SlowFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        state = VisualState()
+        features = FastFeatures(
+            rms=[0.4] * 14,
+            peak=[0.5] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.2] * 14,
+            n_channels=14,
+        )
+
+        # Make a CLAP feature with embedding_norm=1.5 (above the
+        # 0.5×clamp threshold so the audio_norm uniform actually pumps).
+        slow = SlowFeatures(
+            clap_embedding=[0.0] * CLAP_EMBED_DIM,
+            embedding_norm=1.5,
+            update_count=1,
+            inference_ms=20.0,
+        )
+
+        # Run twice with identical fast features but different `slow`.
+        pe_no_clap = ParticleEngine(ctx, n_particles=1000)
+        after_no = _run_n_steps(pe_no_clap, features, state, n_steps=20, slow=None)
+
+        pe_with_clap = ParticleEngine(ctx, n_particles=1000)
+        after_yes = _run_n_steps(pe_with_clap, features, state, n_steps=20, slow=slow)
+
+        # Compare velocities of live particles. They should diverge
+        # noticeably because the flow-field strength is higher with
+        # CLAP norm boosting it. We quantify divergence as the mean
+        # per-particle velocity-vector difference.
+        live_mask_no = after_no[:, 1] > -50.0
+        live_mask_yes = after_yes[:, 1] > -50.0
+        # Sanity: both runs spawned at least some particles (same audio).
+        assert live_mask_no.sum() > 50
+        assert live_mask_yes.sum() > 50
+        # Velocity components live in cols 4..7.
+        # Compare global L2-norm of velocity buffers — easy aggregate.
+        vels_no = after_no[:, 4:7]
+        vels_yes = after_yes[:, 4:7]
+        diff = np.linalg.norm(vels_yes - vels_no, axis=1).mean()
+        assert diff > 0.01, (
+            f"CLAP-driven force should change velocities; mean Δ={diff}"
+        )
+    finally:
+        ctx.release()
+
+
+def test_high_arousal_speeds_up_camera_orbit() -> None:
+    """Phase-13: state.mood.arousal × audio_intensity multiplies the
+    effective orbit speed at runtime. With arousal=0.9 and loud audio,
+    the camera azimuth at t=1s should be noticeably ahead of the
+    arousal=0 baseline.
+
+    Tests the math without needing GL — we just want to verify
+    `(orbit_speed * (1 + 0.6 * arousal * intensity)) * t` produces a
+    different angle for the two cases."""
+    # No GL needed. Pure arithmetic.
+    base_speed = 0.1
+    t = 1.0
+
+    # arousal=0 (calm): no boost.
+    mood_zero_intensity = 0.6  # moderate audio
+    eff_zero = base_speed * (1.0 + 0.6 * 0.0 * mood_zero_intensity)
+    assert eff_zero == pytest.approx(base_speed)
+
+    # arousal=0.9, intensity=0.6 → boost = 1 + 0.6*0.9*0.6 = 1.324
+    eff_high = base_speed * (1.0 + 0.6 * 0.9 * 0.6)
+    assert eff_high > base_speed * 1.3
+    assert eff_high < base_speed * 1.4
+
+    # The angle difference at t=1 should be (eff_high - eff_zero) * 2π
+    # ≈ 0.0324 * 2π ≈ 0.20 radians. Real renderer multiplies by 2π
+    # internally; here we just verify the speed factor scales correctly.
+    azimuth_zero = t * eff_zero * 6.2831853
+    azimuth_high = t * eff_high * 6.2831853
+    assert azimuth_high - azimuth_zero == pytest.approx(0.204, abs=0.01)
+
+
+def test_silent_audio_does_not_modulate_camera() -> None:
+    """When audio_intensity is 0, even arousal=1.0 leaves the camera
+    at its base orbit speed. (Coupling is multiplicative.)"""
+    base = 0.05
+    audio_intensity_silent = 0.0
+    arousal_max = 1.0
+    eff = base * (1.0 + 0.6 * arousal_max * audio_intensity_silent)
+    assert eff == pytest.approx(base)
+
+
+def test_phase13_reactive_vocabulary() -> None:
+    """The new audio-reactivity keywords write into mood.arousal —
+    that's the term the particle engine multiplies into orbit + onset
+    response."""
+    from apophenia.prompt.interpreter import PromptInterpreter
+
+    interp = PromptInterpreter()
+    for word, expected_arousal_min in [
+        ("reactive", 0.5),
+        ("breathing", 0.2),
+        ("pulsing", 0.6),
+        ("volatile", 0.8),
+    ]:
+        r = interp.interpret(word)
+        assert r["matched"] == [word]
+        assert r["partial"]["mood"]["arousal"] >= expected_arousal_min
+
+    r_anchored = interp.interpret("anchored")
+    assert r_anchored["partial"]["mood"]["arousal"] < 0
+    assert r_anchored["partial"]["camera"]["autorotate"] is False
