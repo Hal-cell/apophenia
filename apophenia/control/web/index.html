@@ -526,6 +526,11 @@
           <input type="range" id="fx-chromatic" min="0" max="1" step="0.01" value="0">
           <span class="ctrl-value" id="fx-chromatic-v">0.00</span>
         </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">trail</span>
+          <input type="range" id="fx-trail" min="0" max="0.99" step="0.01" value="0">
+          <span class="ctrl-value" id="fx-trail-v">0.00</span>
+        </div>
         <div class="toggle-row">
           <span class="ctrl-label">kaleidoscope</span>
           <div class="stepper">
@@ -695,6 +700,7 @@
     'palette.saturation':       bindSlider('palette-saturation',       'palette.saturation'),
     'fx.glitch':                bindSlider('fx-glitch',                'fx.glitch'),
     'fx.chromatic':             bindSlider('fx-chromatic',             'fx.chromatic'),
+    'fx.trail':                 bindSlider('fx-trail',                 'fx.trail'),
   };
 
   // ---------------------------------------------------------------- //
@@ -981,6 +987,7 @@
     if (s.fx) {
       sliders['fx.glitch'].set(s.fx.glitch);
       sliders['fx.chromatic'].set(s.fx.chromatic);
+      sliders['fx.trail'].set(s.fx.trail || 0);
       if (!dirty.has('fx.kaleidoscope')) setKal(s.fx.kaleidoscope || 1);
     }
     // transport

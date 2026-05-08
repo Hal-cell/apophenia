@@ -113,6 +113,25 @@ def test_custom_vocabulary_override() -> None:
     assert r["partial"] == {"palette": {"saturation": 1.7}}
 
 
+def test_trail_vocabulary_writes_fx_trail() -> None:
+    """Phase-11 trail keywords drive `fx.trail`."""
+    interp = PromptInterpreter()
+    for word in ("trail", "smear", "ghost", "echo", "sustained", "decay"):
+        r = interp.interpret(word)
+        assert r["matched"] == [word]
+        assert "fx" in r["partial"]
+        assert "trail" in r["partial"]["fx"]
+        assert 0.0 < r["partial"]["fx"]["trail"] < 1.0
+
+
+def test_smooth_clears_trail_too() -> None:
+    """`smooth` is the post-FX kill switch — should also zero the trail."""
+    r = PromptInterpreter().interpret("smooth")
+    assert r["partial"]["fx"]["trail"] == 0.0
+    assert r["partial"]["fx"]["glitch"] == 0.0
+    assert r["partial"]["fx"]["chromatic"] == 0.0
+
+
 # ---- helper ---- #
 
 
