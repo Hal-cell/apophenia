@@ -547,6 +547,85 @@ def test_compositor_chromatic_separates_rgb_at_edges() -> None:
         ctx.release()
 
 
+def test_compositor_trail_zero_does_not_persist() -> None:
+    """trail=0 means feedback is ignored — bright pixels in frame N
+    must NOT bleed into frame N+1's output."""
+    import numpy as np
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        size = (32, 32)
+        comp, out_fbo, _ = _composite_setup(ctx, size=size)
+
+        # Frame 1: paint offscreen white, render with trail=0.
+        white = np.full((32, 32, 4), 255, dtype=np.uint8)
+        _paint_offscreen(comp, white.tobytes())
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, trail=0.0)
+
+        # Frame 2: paint offscreen black, render with trail=0.
+        # Output should be black — no persistence from frame 1.
+        black = np.zeros((32, 32, 4), dtype=np.uint8)
+        black[..., 3] = 255
+        _paint_offscreen(comp, black.tobytes())
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, trail=0.0)
+
+        raw = out_fbo.read(components=4, dtype="f1")
+        cx, cy = size[0] // 2, size[1] // 2
+        idx = (cy * size[0] + cx) * 4
+        assert raw[idx] <= 5, f"trail=0 should not persist; R={raw[idx]}"
+        assert raw[idx + 1] <= 5, f"trail=0 should not persist; G={raw[idx + 1]}"
+        assert raw[idx + 2] <= 5, f"trail=0 should not persist; B={raw[idx + 2]}"
+    finally:
+        ctx.release()
+
+
+def test_compositor_trail_persists_bright_pixels() -> None:
+    """trail=0.85 means yesterday's bright pixels still glow today.
+    Frame 1 paints white; frame 2 paints black; with trail on the
+    output of frame 2 should still show appreciable brightness."""
+    import numpy as np
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        size = (32, 32)
+        comp, out_fbo, _ = _composite_setup(ctx, size=size)
+
+        # Frame 1: paint white, render with trail on (warms up feedback).
+        white = np.full((32, 32, 4), 255, dtype=np.uint8)
+        _paint_offscreen(comp, white.tobytes())
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, trail=0.85)
+
+        # Frame 2: paint black, but trail keeps prev-frame's white glowing.
+        black = np.zeros((32, 32, 4), dtype=np.uint8)
+        black[..., 3] = 255
+        _paint_offscreen(comp, black.tobytes())
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, trail=0.85)
+
+        raw = out_fbo.read(components=4, dtype="f1")
+        cx, cy = size[0] // 2, size[1] // 2
+        idx = (cy * size[0] + cx) * 4
+        # Trail decay 0.85 over 1 frame: expect ≥ 200 (out of 255).
+        avg_lum = (raw[idx] + raw[idx + 1] + raw[idx + 2]) // 3
+        assert avg_lum > 150, (
+            f"trail=0.85 should persist white pixels into next frame; "
+            f"got avg luma {avg_lum}"
+        )
+    finally:
+        ctx.release()
+
+
 def test_compositor_glitch_displaces_some_rows() -> None:
     """Glitch=1 row-displacement: output differs from glitch=0 across
     many pixels (the hash trips ~15% of rows)."""

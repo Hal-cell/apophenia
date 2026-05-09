@@ -39,6 +39,13 @@ class FxState(BaseModel):
     via 24-tap Poisson-disk Gaussian over mipmap level 2 of the shader
     FBO. Default 0.3 = tasteful baseline."""
 
+    trail: float = Field(0.0, ge=0.0, le=1.0)
+    """Feedback / persistence: composite blends with the previous
+    frame's output via per-channel max-decay. 0 = no trail, 0.85 ≈ 5s
+    decay (bright pixels leave long ghosting tails), >0.95 = near-
+    infinite persistence (washes to white quickly). Default 0 keeps
+    output crisp; the autopilot Modulator drives it dynamically."""
+
     glitch: float = Field(0.0, ge=0.0, le=1.0)
     """Per-row UV displacement intensity; sparse rows trigger so the
     effect reads as bursts rather than a uniform shake."""

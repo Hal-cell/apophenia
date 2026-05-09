@@ -64,7 +64,7 @@ def centroid_to_hue(hz: float) -> float:
 
 # Preset roster. Each shader is a self-contained fragment-only preset
 # using the shared uniform interface (see `shaders/*.frag`).
-# All seven are grounded in a maths or physics model:
+# All eight are grounded in a maths or physics model:
 #   flow         — domain-warped FBM noise field; organic mist
 #   prism        — rotating regular-polygon SDF; hard-edged colour shards
 #   plasma       — 3-octave FBM metaball; lava-lamp pad texture
@@ -73,6 +73,10 @@ def centroid_to_hue(hz: float) -> float:
 #   curl_noise   — curl of 2D noise (incompressible flow); smoke / vapor
 #   quasicrystal — sum of N cosine plane waves at golden-angle
 #                  increments; Penrose-style aperiodic interference
+#   gyroid       — animated 2D slice of a 3D triply-periodic minimal
+#                  surface (Schoen-class TPMS) with analytic-gradient
+#                  Lambertian shading; the only preset with a real
+#                  3D feel via lit normals
 PRESETS = (
     "flow",
     "prism",
@@ -81,6 +85,7 @@ PRESETS = (
     "lattice",
     "curl_noise",
     "quasicrystal",
+    "gyroid",
 )
 
 
@@ -95,28 +100,28 @@ class Layer:
     channel: int
 
 
-# Default 14-layer mapping. With 7 presets × 14 channels we land at
-# exactly two channels per preset, balanced. Channel groups roughly:
+# Default 14-layer mapping. 8 presets × 14 channels — most presets get
+# 2 layers, one gets a singleton. Channel groups roughly:
 #   Ch1-3:   percussion-flavoured (kick / bass / lead)
 #   Ch4:     pad — smooth flowing surface
 #   Ch5-8:   percussion / FX channels — mix of organic + structural
 #   Ch9-11:  FX bursts — onset-reactive geometry
 #   Ch12-14: slow CV / drones — smooth, low-energy textures
 DEFAULT_LAYERS: list[Layer] = [
-    Layer(preset="shock",         channel=0),    # kick → radial pulse
-    Layer(preset="prism",         channel=1),    # bass → rotating polygon
-    Layer(preset="quasicrystal",  channel=2),    # lead → aperiodic lattice
-    Layer(preset="plasma",        channel=3),    # pad  → smooth plasma
-    Layer(preset="curl_noise",    channel=4),    # perc → incompressible flow
-    Layer(preset="flow",          channel=5),    # perc → fbm mist
-    Layer(preset="lattice",       channel=6),    # perc → voronoi
-    Layer(preset="shock",         channel=7),    # perc → radial pulse
-    Layer(preset="quasicrystal",  channel=8),    # FX   → aperiodic lattice
-    Layer(preset="prism",         channel=9),    # FX   → rotating polygon
-    Layer(preset="lattice",       channel=10),   # FX   → voronoi
-    Layer(preset="plasma",        channel=11),   # drone → smooth plasma
+    Layer(preset="shock",         channel=0),    # kick  → radial pulse
+    Layer(preset="prism",         channel=1),    # bass  → rotating polygon
+    Layer(preset="quasicrystal",  channel=2),    # lead  → aperiodic lattice
+    Layer(preset="gyroid",        channel=3),    # pad   → 3D minimal surface
+    Layer(preset="curl_noise",    channel=4),    # perc  → incompressible flow
+    Layer(preset="flow",          channel=5),    # perc  → fbm mist
+    Layer(preset="lattice",       channel=6),    # perc  → voronoi
+    Layer(preset="shock",         channel=7),    # perc  → radial pulse
+    Layer(preset="quasicrystal",  channel=8),    # FX    → aperiodic lattice
+    Layer(preset="prism",         channel=9),    # FX    → rotating polygon
+    Layer(preset="lattice",       channel=10),   # FX    → voronoi
+    Layer(preset="gyroid",        channel=11),   # drone → 3D minimal surface
     Layer(preset="curl_noise",    channel=12),   # drone → incompressible flow
-    Layer(preset="flow",          channel=13),   # drone → fbm mist
+    Layer(preset="plasma",        channel=13),   # drone → smooth plasma
 ]
 
 
@@ -288,21 +293,47 @@ class Compositor:
         self.vbo = ctx.buffer(quad_vertices.tobytes())
         self.vao = ctx.simple_vertex_array(self.program, self.vbo, "in_pos")
 
-        # Sampler unit pin — composite.frag only reads u_shader_tex now.
+        # Composite samples shader_tex (unit 0) and the previous frame's
+        # composite output (unit 1, for feedback / trail effects).
         _set_uniform(self.program, "u_shader_tex", 0)
+        _set_uniform(self.program, "u_feedback_tex", 1)
+
+        # Tiny passthrough program for blitting our internal feedback FBO
+        # to the screen. We composite into the feedback FBO (so it can be
+        # sampled next frame), then copy it to the visible window.
+        blit_frag = """#version 330
+        uniform sampler2D u_tex;
+        in vec2 v_uv;
+        out vec4 fragColor;
+        void main() { fragColor = texture(u_tex, v_uv); }
+        """
+        self.blit_program = ctx.program(
+            vertex_shader=vert_src, fragment_shader=blit_frag
+        )
+        self.blit_vao = ctx.simple_vertex_array(self.blit_program, self.vbo, "in_pos")
+        _set_uniform(self.blit_program, "u_tex", 0)
 
         self._fbo_size: tuple[int, int] = (0, 0)
         self._shader_tex: moderngl.Texture | None = None
         self._fbo: moderngl.Framebuffer | None = None
+
+        # Ping-pong feedback FBOs. At frame N we sample from index
+        # (1 - cur), composite into index `cur`, then blit `cur` to
+        # the screen. At frame N+1 `cur` flips. This lets us read
+        # last-frame's composite as input to this-frame's composite,
+        # which is the classic video-feedback trick — bright pixels
+        # decay over many frames as `u_trail` decay multiplier <1.
+        self._feedback_size: tuple[int, int] = (0, 0)
+        self._feedback_textures: list[moderngl.Texture | None] = [None, None]
+        self._feedback_fbos: list[moderngl.Framebuffer | None] = [None, None]
+        self._feedback_idx = 0
 
     def offscreen_fbo(self, size: tuple[int, int]) -> moderngl.Framebuffer:
         """Return the offscreen FBO, recreating it if `size` changed.
 
         The colour attachment uses LINEAR_MIPMAP_LINEAR filtering so the
         compositor can pyramid-bloom by reading multiple mipmap levels
-        in `composite.frag` (each level halves resolution → naturally
-        low-pass filtered → cheap approximation of a Gaussian-blurred
-        version of the same scene).
+        in `composite.frag`.
         """
         if size != self._fbo_size or self._fbo is None:
             if self._shader_tex is not None:
@@ -323,6 +354,35 @@ class Compositor:
             self._fbo_size = size
         return self._fbo
 
+    def _ensure_feedback(self, size: tuple[int, int]) -> None:
+        """Create / recreate the ping-pong feedback FBOs if `size` changed.
+        Both are cleared to black on (re)creation so the first frame doesn't
+        sample garbage from uninitialised GPU memory."""
+        if size == self._feedback_size and all(
+            f is not None for f in self._feedback_fbos
+        ):
+            return
+        for tex in self._feedback_textures:
+            if tex is not None:
+                tex.release()
+        for fbo in self._feedback_fbos:
+            if fbo is not None:
+                fbo.release()
+        self._feedback_textures = []
+        self._feedback_fbos = []
+        for _ in range(2):
+            tex = self.ctx.texture(size, components=4, dtype="f1")
+            tex.repeat_x = False
+            tex.repeat_y = False
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._feedback_textures.append(tex)
+            fbo = self.ctx.framebuffer(color_attachments=[tex])
+            # Clear to black so the cold-start frame doesn't trail nothing.
+            fbo.use()
+            self.ctx.clear(0.0, 0.0, 0.0, 1.0)
+            self._feedback_fbos.append(fbo)
+        self._feedback_size = size
+
     def render(
         self,
         saturation: float = 1.0,
@@ -331,26 +391,51 @@ class Compositor:
         chromatic: float = 0.0,
         kaleidoscope_segments: int = 1,
         bloom: float = 0.0,
+        trail: float = 0.0,
     ) -> None:
-        """Draw the composite to the currently-bound framebuffer.
+        """Composite shader_tex (+ previous-frame feedback if `trail > 0`)
+        and blit the result to the framebuffer the *caller* has bound on
+        entry.
 
-        Caller must have already drawn the shader pass into `offscreen_fbo`.
-        The default framebuffer should be bound on entry so this writes
-        to the visible window.
+        Two-pass internally:
+          1. composite → write into our internal feedback FBO (so we can
+             sample it as `u_feedback_tex` next frame)
+          2. blit the just-written feedback texture → caller's framebuffer
+             (which is `ctx.screen` in the production render path, or a
+             test FBO in unit tests)
         """
-        # The composite pass is fully opaque — disable blending so a
-        # leftover ADD_ALPHA from the shader pass doesn't affect us.
-        self.ctx.disable(moderngl.BLEND)
-
-        if self._shader_tex is None:
+        if self._shader_tex is None or self._fbo_size == (0, 0):
             return  # offscreen_fbo() never called; nothing to composite
 
-        # Refresh the mipmap chain from the freshly-rendered base level.
-        # ~1ms at 1080p — calls glGenerateMipmap on the GPU.
+        # Capture the caller-intended target FIRST — `_ensure_feedback`
+        # below binds FBOs internally to clear them, which would leave
+        # `ctx.fbo` pointing at an internal feedback buffer if we
+        # captured after.
+        caller_target = self.ctx.fbo
+
+        size = self._fbo_size
+        self._ensure_feedback(size)
+        self.ctx.disable(moderngl.BLEND)
+
+        # Refresh the mipmap chain (cheap on M3 Max) so bloom can read
+        # the freshly-rendered base level. Skip when bloom is off to
+        # save the glGenerateMipmap call.
         if bloom > 0.0:
             self._shader_tex.build_mipmaps()
 
+        # Pass 1: composite into the next feedback FBO (the "write" slot),
+        # sampling from the previous one (the "read" slot, which holds
+        # last frame's composite output for the trail effect).
+        write_idx = self._feedback_idx
+        read_idx = 1 - self._feedback_idx
+        write_fbo = self._feedback_fbos[write_idx]
+        read_tex = self._feedback_textures[read_idx]
+        assert write_fbo is not None and read_tex is not None
+
         self._shader_tex.use(location=0)
+        read_tex.use(location=1)
+        write_fbo.use()
+        self.ctx.viewport = (0, 0, *size)
 
         _set_uniform(self.program, "u_saturation", float(saturation))
         _set_uniform(self.program, "u_glitch", float(glitch))
@@ -358,8 +443,19 @@ class Compositor:
         _set_uniform(self.program, "u_kaleidoscope_segments", int(kaleidoscope_segments))
         _set_uniform(self.program, "u_time", float(time_s))
         _set_uniform(self.program, "u_bloom", float(bloom))
+        _set_uniform(self.program, "u_trail", float(trail))
 
         self.vao.render(moderngl.TRIANGLE_STRIP)
+
+        # Pass 2: blit the freshly-written feedback texture to the
+        # caller's framebuffer (tiny passthrough shader, one quad).
+        caller_target.use()
+        self.ctx.viewport = (0, 0, *size)
+        self._feedback_textures[write_idx].use(location=0)  # type: ignore[union-attr]
+        self.blit_vao.render(moderngl.TRIANGLE_STRIP)
+
+        # Swap for next frame.
+        self._feedback_idx = 1 - self._feedback_idx
 
 
 # ---- moderngl_window glue ---- #
@@ -472,12 +568,14 @@ class ApopheniaWindow(mglw.WindowConfig):
             chromatic = state.fx.chromatic
             kaleidoscope = state.fx.kaleidoscope
             bloom = state.fx.bloom
+            trail = state.fx.trail
         else:
             saturation = 1.0
             glitch = 0.0
             chromatic = 0.0
             kaleidoscope = 1
             bloom = 0.0
+            trail = 0.0
         self.compositor.render(
             saturation=saturation,
             time_s=time_s,
@@ -485,6 +583,7 @@ class ApopheniaWindow(mglw.WindowConfig):
             chromatic=chromatic,
             kaleidoscope_segments=kaleidoscope,
             bloom=bloom,
+            trail=trail,
         )
 
         self._frame_count += 1
