@@ -283,6 +283,22 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "tight_pattern":  {"emitter": {"radius": 0.7}},
     "wide_pattern":   {"emitter": {"radius": 3.5}},
 
+    # Phase-18 morph / dynamics modifiers. The pattern transition itself
+    # is automatic on pattern change — these keywords either pre-tune
+    # mood.arousal so emitters wobble more under audio, or push
+    # motion_amp directly.
+    "morphing":   {"emitter": {"motion_amp": 0.5, "motion_speed": 0.6},
+                   "mood": {"arousal": 0.4}},
+    "shifting":   {"emitter": {"motion_amp": 0.6, "motion_speed": 0.5}},
+    "evolving":   {"emitter": {"motion_amp": 0.55, "motion_speed": 0.4},
+                   "mood": {"arousal": 0.3}},
+    # Phase-18: extend `drifting` (already defined under motion-speed)
+    # so it ALSO triggers emitter wobble when used in a phrase like
+    # "drifting constellation" — the existing definition's motion fields
+    # combine with these emitter fields via the deep-merge.
+    "slowfloat":  {"emitter": {"motion_amp": 0.5, "motion_speed": 0.3},
+                   "motion": {"speed": 0.5}},
+
     # ---- Behaviour primitives ---- #
     "bloom":     {"motion": {"speed": 0.7, "density": 0.6,
                              "onset_sensitivity": 1.4}},

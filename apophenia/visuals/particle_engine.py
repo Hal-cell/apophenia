@@ -173,6 +173,13 @@ _PATTERN_BUILDERS = {
 }
 
 
+def _pattern_base(pattern: str, radius: float) -> np.ndarray:
+    """Look up a pattern builder by name. Unknown patterns fall back
+    to `ring` rather than raising — keeps the wire protocol forgiving."""
+    builder = _PATTERN_BUILDERS.get(pattern, _ring_positions)
+    return builder(radius)
+
+
 def compute_emitter_positions(
     pattern: str,
     radius: float,
@@ -180,23 +187,31 @@ def compute_emitter_positions(
     motion_speed: float,
     time_s: float,
 ) -> np.ndarray:
-    """Compute the live (14, 3) emitter positions for the given state
-    + time. Returns float32. Each emitter orbits its base position on
-    a per-channel Lissajous curve, scaled by `motion_amp`.
+    """Static one-shot emitter math (no morph, no audio). Used by tests
+    and as the base for the engine-method version below.
+
+    Returns (14, 3) float32. Each emitter orbits its base position
+    on a per-channel Lissajous curve scaled by `motion_amp`.
     """
-    builder = _PATTERN_BUILDERS.get(pattern, _ring_positions)
-    base = builder(radius)
+    base = _pattern_base(pattern, radius)
     if motion_amp > 1e-6:
         t = time_s * motion_speed
         ch = np.arange(N_EMITTERS, dtype=np.float32)
         drift = np.zeros((N_EMITTERS, 3), dtype=np.float32)
-        # Per-channel phase + frequency offsets so emitters don't all
-        # orbit in lockstep.
         drift[:, 0] = np.sin(t + ch * 0.7) * motion_amp * 0.30
         drift[:, 1] = np.cos(t * 0.8 + ch * 1.3) * motion_amp * 0.15
         drift[:, 2] = np.sin(t * 1.1 + ch * 1.9) * motion_amp * 0.30
         return base + drift
     return base
+
+
+# Phase-18 dynamic emitter math: smooth pattern morphs + audio-reactive
+# motion + per-channel onset pulses. Uses smoothstep over PATTERN_MORPH_S
+# seconds to interpolate between the old and new base positions when
+# the user changes `state.emitter.pattern`. Lives as a method on
+# `ParticleEngine` so it can hold transition state across frames.
+PATTERN_MORPH_S = 0.8
+ONSET_PULSE_GAIN = 0.18  # how much an emitter pumps outward per onset
 
 
 # --------------------------------------------------------------------------- #
@@ -207,7 +222,12 @@ def compute_emitter_positions(
 class ParticleEngine:
     """3D particle simulation + render. See module docstring for context."""
 
-    DEFAULT_N_PARTICLES = 50_000
+    # Phase-18: bumped from 50k to 100k for denser TD-cluster look.
+    # 100k particles × 32 bytes per particle × 2 ping-pong buffers =
+    # 6.4 MB GPU memory. Each instanced GL_LINES draw is now 2 verts
+    # × 100k instances = 200k vertex shader invocations per frame —
+    # well within M3 Max's headroom.
+    DEFAULT_N_PARTICLES = 100_000
 
     def __init__(
         self,
@@ -216,6 +236,12 @@ class ParticleEngine:
     ) -> None:
         self.ctx = ctx
         self.n_particles = int(n_particles)
+        # Phase-18 emitter morph state. We start with the default
+        # ring as both prev and target so first frame is static.
+        self._emitter_prev_pattern: str = "ring"
+        self._emitter_target_pattern: str = "ring"
+        self._emitter_target_radius: float = 1.6
+        self._emitter_transition_start_t: float = -PATTERN_MORPH_S
 
         # ---- Programs ---- #
         update_src = (SHADER_DIR / "particle_update.vert").read_text()
@@ -275,6 +301,95 @@ class ParticleEngine:
     # ------------------------------------------------------------------ #
     # Init
     # ------------------------------------------------------------------ #
+
+    def _dynamic_emitter_positions(
+        self,
+        pattern: str,
+        radius: float,
+        motion_amp: float,
+        motion_speed: float,
+        time_s: float,
+        rms: np.ndarray,
+        onset: np.ndarray,
+        weight: np.ndarray,
+    ) -> np.ndarray:
+        """Phase-18 dynamic emitter math. On top of `compute_emitter_positions`:
+
+        * Pattern morph — when `pattern` differs from the previously
+          observed target, smoothstep-lerp between the old and new
+          base positions over `PATTERN_MORPH_S` seconds. Multiple
+          rapid changes interrupt cleanly: the *current* interpolated
+          position becomes the new prev and the new pattern is the
+          new target.
+        * Per-channel onset pulse — each emitter pushes outward
+          (along its base direction from origin) by an amount
+          proportional to `rms[ch] + onset[ch]`. Onset transients
+          read as percussive emitter pumps.
+        """
+        target_changed = (
+            pattern != self._emitter_target_pattern
+            or abs(radius - self._emitter_target_radius) > 1e-4
+        )
+        if target_changed:
+            # Capture the *current* (interpolated) state as the new prev
+            # so morphs can be interrupted gracefully.
+            current_base = self._compute_morphed_base(
+                self._emitter_target_radius, time_s
+            )
+            self._emitter_prev_pattern_positions = current_base
+            self._emitter_target_pattern = pattern
+            self._emitter_target_radius = radius
+            self._emitter_transition_start_t = time_s
+            # Reset prev_pattern label — once we're using cached
+            # positions, the label is just for telemetry.
+            self._emitter_prev_pattern = "<interpolated>"
+
+        # Compute base via morph if a transition is in progress.
+        base = self._compute_morphed_base(radius, time_s)
+
+        # Drift on top of the morphed base (phase-17 wandering).
+        if motion_amp > 1e-6:
+            t = time_s * motion_speed
+            ch = np.arange(N_EMITTERS, dtype=np.float32)
+            drift = np.zeros((N_EMITTERS, 3), dtype=np.float32)
+            drift[:, 0] = np.sin(t + ch * 0.7) * motion_amp * 0.30
+            drift[:, 1] = np.cos(t * 0.8 + ch * 1.3) * motion_amp * 0.15
+            drift[:, 2] = np.sin(t * 1.1 + ch * 1.9) * motion_amp * 0.30
+            base = base + drift
+
+        # Per-channel onset pulse: push each emitter outward along its
+        # current radial direction by an amount proportional to that
+        # channel's audio activity.
+        activity = (rms + onset * 1.5) * weight
+        # Outward direction = normalised(base) — emitter pumps away
+        # from origin, channel-weighted by audio. Avoid div-by-zero
+        # for emitters at the origin (e.g. line pattern's middle
+        # element).
+        norms = np.linalg.norm(base, axis=1, keepdims=True)
+        safe_norms = np.maximum(norms, 1e-3)
+        outward = base / safe_norms
+        pulse = outward * activity[:, np.newaxis] * ONSET_PULSE_GAIN
+        base = base + pulse
+
+        return base.astype(np.float32, copy=False)
+
+    def _compute_morphed_base(self, radius: float, time_s: float) -> np.ndarray:
+        """Smoothstep-lerp between the morph's prev and target base
+        patterns. Returns the (14, 3) base position array. If no morph
+        is in progress, returns the target pattern's base directly."""
+        elapsed = time_s - self._emitter_transition_start_t
+        if elapsed >= PATTERN_MORPH_S:
+            return _pattern_base(self._emitter_target_pattern, radius)
+        # Smoothstep weighting.
+        t = max(0.0, min(elapsed / PATTERN_MORPH_S, 1.0))
+        s = t * t * (3.0 - 2.0 * t)
+        # Use cached prev positions if we have them (set on transition
+        # start); otherwise build from prev pattern label.
+        prev = getattr(self, "_emitter_prev_pattern_positions", None)
+        if prev is None:
+            prev = _pattern_base(self._emitter_prev_pattern, radius)
+        target = _pattern_base(self._emitter_target_pattern, radius)
+        return prev * (1.0 - s) + target * s
 
     @staticmethod
     def _initial_particle_data(n: int) -> np.ndarray:
@@ -369,15 +484,28 @@ class ParticleEngine:
         # a useful 0..1 range with a soft-knee.
         audio_norm = float(np.clip(audio_norm * 0.5, 0.0, 1.0))
 
-        # Phase-17: compute live emitter positions from EmitterState +
-        # time, upload as a `vec3 u_emitters[14]` uniform. The shader
-        # reads this instead of computing its own ring.
-        emitters = compute_emitter_positions(
+        # Phase-17/18: compute live emitter positions from EmitterState
+        # + audio activity + transition state. Includes:
+        #   - smooth morph between previous and new patterns when the
+        #     user changes `state.emitter.pattern`
+        #   - audio-reactive wobble: motion_amp scales with mood.arousal
+        #     × audio_intensity (loud arousal-positive mixes wobble more)
+        #   - per-channel onset pulse: each emitter pumps outward on its
+        #     channel's transient
+        # Uploaded as a `vec3 u_emitters[14]` uniform array.
+        arousal = float(state.mood.arousal)
+        effective_motion_amp = float(state.emitter.motion_amp) * (
+            1.0 + 0.6 * max(arousal, 0.0) * audio_intensity
+        )
+        emitters = self._dynamic_emitter_positions(
             pattern=state.emitter.pattern,
             radius=float(state.emitter.radius),
-            motion_amp=float(state.emitter.motion_amp),
+            motion_amp=effective_motion_amp,
             motion_speed=float(state.emitter.motion_speed),
             time_s=time_s,
+            rms=rms,
+            onset=onset,
+            weight=weight,
         )
 
         # ---- Update pass ---- #
