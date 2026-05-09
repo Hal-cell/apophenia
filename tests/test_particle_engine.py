@@ -589,3 +589,76 @@ def test_phase14_force_vocabulary_validates_against_schema() -> None:
             continue
         merged = {**ForceState().model_dump(), **diff["force"]}
         ForceState.model_validate(merged), f"{keyword!r} produces invalid force state"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 16: velocity streaks
+# --------------------------------------------------------------------------- #
+
+
+def test_streak_render_produces_visible_output() -> None:
+    """Phase-16: with streak_length > 0 the engine renders particles
+    as lines instead of points. Smoke-test that the GL pipeline draws
+    *something* — pixels accumulate in the FBO.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        size = (128, 128)
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        fbo = ctx.framebuffer(color_attachments=[out_tex])
+
+        pe = ParticleEngine(ctx, n_particles=2000)
+        state = VisualState()
+        # Loud audio + decent streak so streaks are visible.
+        state.force.streak_length = 0.2
+        features = FastFeatures(
+            rms=[0.7] * 14,
+            peak=[0.8] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.3] * 14,
+            n_channels=14,
+        )
+
+        fbo.use()
+        ctx.viewport = (0, 0, *size)
+        ctx.clear(0.0, 0.0, 0.0, 1.0)
+        for i in range(20):
+            pe.update_and_render(features, time_s=i * 0.033, dt=0.033,
+                                 resolution=size, state=state)
+
+        raw = fbo.read(components=4, dtype="f1")
+        # Some pixels should be lit — the test verifies the GL pipeline
+        # went through, not visual quality.
+        bright = sum(1 for i in range(0, len(raw), 4)
+                     if raw[i] > 5 or raw[i + 1] > 5 or raw[i + 2] > 5)
+        assert bright > 100, (
+            f"streak rendering should produce visible output; "
+            f"only {bright}/{len(raw) // 4} bright pixels"
+        )
+    finally:
+        ctx.release()
+
+
+def test_phase16_streak_vocabulary_writes_force_streak_length() -> None:
+    """`streaks / lines / ribbons / comet / wisps` raise streak_length;
+    `points / dots / stippled` zero it."""
+    from apophenia.prompt.interpreter import PromptInterpreter
+
+    interp = PromptInterpreter()
+    for word in ("streaks", "lines", "ribbons", "comet", "wisps"):
+        r = interp.interpret(word)
+        assert r["matched"] == [word]
+        assert r["partial"]["force"]["streak_length"] >= 0.18, (
+            f"{word!r} should produce a meaningful streak length"
+        )
+
+    for word in ("points", "dots", "stippled"):
+        r = interp.interpret(word)
+        assert r["matched"] == [word]
+        assert r["partial"]["force"]["streak_length"] == 0.0

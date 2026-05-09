@@ -139,10 +139,8 @@ class ParticleEngine:
         ]
         self._read_idx = 0  # which buffer holds the current state
 
-        # VAOs for each direction of the ping-pong. The "update" VAO
-        # binds to the *read* buffer and feeds out into the write buffer
-        # via `vao.transform()`. We rebuild the VAO per frame because
-        # the source buffer changes — moderngl's VAO is cheap.
+        # Update-pass VAOs: vertex array reads particle state, transform
+        # feedback writes the next state into the other buffer.
         self._update_vaos = [
             ctx.vertex_array(
                 self.update_program,
@@ -150,10 +148,23 @@ class ParticleEngine:
             )
             for buf in self._buffers
         ]
+
+        # Render pass: phase-16 instanced line rendering. Each particle
+        # is drawn as a 2-vertex GL_LINES primitive (tail → head). The
+        # static `_line_geom` VBO holds two `in_vertex_t` values (0 for
+        # tail, 1 for head); the per-instance attributes pull from the
+        # particle state buffer. Net: 2 × N vertex shader invocations,
+        # GL_LINES rasterizes the streaks.
+        self._line_geom = ctx.buffer(
+            np.array([0.0, 1.0], dtype="f4").tobytes()
+        )
         self._render_vaos = [
             ctx.vertex_array(
                 self.render_program,
-                [(buf, "4f 4f", "in_pos_age", "in_vel_seed")],
+                [
+                    (self._line_geom, "1f", "in_vertex_t"),
+                    (buf, "4f 4f /i", "in_pos_age", "in_vel_seed"),
+                ],
             )
             for buf in self._buffers
         ]
@@ -313,16 +324,16 @@ class ParticleEngine:
             rms=rms,
             hue_offset_deg=float(state.palette.hue) * 360.0,
             saturation=float(state.palette.saturation),
+            streak_length=float(state.force.streak_length),
         )
-        # Need PROGRAM_POINT_SIZE so gl_PointSize from the vertex
-        # shader takes effect — moderngl exposes this as ctx flag.
-        try:
-            self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
-        except Exception:  # noqa: BLE001 — older mglw versions miss the flag
-            pass
+        # Phase-16: instanced GL_LINES — each particle is one 2-vertex
+        # line. The static line geom (2 t-values) is consumed by the
+        # vertex shader twice per particle (tail at t=0, head at t=1);
+        # the per-instance particle data is shared between both ends.
         self._render_vaos[self._read_idx].render(
-            mode=moderngl.POINTS,
-            vertices=self.n_particles,
+            mode=moderngl.LINES,
+            vertices=2,
+            instances=self.n_particles,
         )
 
     # ------------------------------------------------------------------ #
@@ -386,6 +397,7 @@ class ParticleEngine:
         rms: np.ndarray,
         hue_offset_deg: float,
         saturation: float,
+        streak_length: float,
     ) -> None:
         prog = self.render_program
         # moderngl accepts mat4 as a flat 16-float tuple. Standard GL is
@@ -399,6 +411,7 @@ class ParticleEngine:
         _set_array(prog, "u_rms", rms)
         _set(prog, "u_hue_offset_deg", hue_offset_deg)
         _set(prog, "u_saturation", saturation)
+        _set(prog, "u_streak_length", streak_length)
 
 
 # --------------------------------------------------------------------------- #
