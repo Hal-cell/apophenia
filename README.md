@@ -82,7 +82,7 @@ uv run synapse smoke -s mock:drums
 
 | Command | Description |
 |---|---|
-| `synapse run` | Spin up audio capture + meter web UI + OSC sender |
+| `synapse run` | Spin up audio capture + meter web UI + OSC sender (with live role-switching) |
 | `synapse devices` | List Core Audio input devices (★ for multichannel) |
 | `synapse smoke` | Pull frames for N seconds, print per-channel RMS table |
 | `synapse version` | Package + dependency versions |
@@ -101,6 +101,33 @@ uv run synapse smoke -s mock:drums
 | `--no-osc` | off | Disable OSC sending entirely (web meter only) |
 | `--no-clap` | off | Disable CLAP slow tier (skip 600MB model download) |
 | `--no-browser` | off | Don't auto-open the web meter |
+
+### Live role switching
+
+The `--gate / --cv / --audio` flags only seed the *initial* roles.
+While synapse is running you can re-assign any channel from the web
+UI: click the small role badge in a channel cell to cycle
+audio → cv → gate. The change takes effect on the next audio block
+(~10ms at 48kHz/512), no restart, no audio drop. CV / gate / spectrum
+detectors run for every channel at all times — the role list just
+decides what gets emitted on OSC and rendered in the UI.
+
+The same control surface is available over HTTP for scripting:
+
+```bash
+# get current roles
+curl http://127.0.0.1:8000/roles
+
+# flip channel 0 (0-based) to cv
+curl -X POST http://127.0.0.1:8000/roles \
+    -H 'Content-Type: application/json' \
+    -d '{"channel": 0, "role": "cv"}'
+
+# replace the entire role list
+curl -X POST http://127.0.0.1:8000/roles \
+    -H 'Content-Type: application/json' \
+    -d '{"roles": ["gate","gate","cv","cv","cv","cv","audio","audio","audio","audio","audio","audio","audio","audio"]}'
+```
 
 ## Architecture
 

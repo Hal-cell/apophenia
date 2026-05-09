@@ -36,7 +36,7 @@ from synapse.audio.features_slow import (
     slow_features_loop,
 )
 from synapse.audio.source import parse_source_arg
-from synapse.channels import ChannelMap, ChannelRole
+from synapse.channels import ChannelMap, ChannelRole, ChannelRolesController
 from synapse.control.server import make_app
 from synapse.osc import OSCSender
 
@@ -120,23 +120,28 @@ def run(
         audio=audio_channels or None,
     )
 
+    # ---- Live roles controller ---- #
+    # Initial role list comes from the CLI flags above. The controller
+    # is mutable and thread-safe: the FastAPI POST /roles endpoint
+    # mutates it, the audio thread snapshots it once per block.
+    initial_roles = [channel_map.role(i) for i in range(src.n_channels)]
+    roles_controller = ChannelRolesController(initial_roles)
+
     # ---- Detectors ---- #
-    # Audio block rate (block_size samples at the source's sample_rate).
-    # CV detector + gate detector run at this rate; spectrum is throttled
-    # to ~30Hz internally.
+    # All detectors run over **all** channels regardless of their
+    # current role — that way live role-switching is free (a channel
+    # toggling audio→cv just appears in the next block's CV payload,
+    # since its IIR has been quietly tracking all along). The audio
+    # loop filters detector outputs by the controller's snapshot per
+    # block.
     block_rate = src.sample_rate / src.block_size
-    cv_idx = channel_map.channels_with(ChannelRole.CV)
-    gate_idx = channel_map.channels_with(ChannelRole.GATE)
-    audio_idx = channel_map.channels_with(ChannelRole.AUDIO)
-    cv_detector = CVDetector(cv_idx, block_rate_hz=block_rate) if cv_idx else None
-    gate_detector = GateDetector(gate_idx) if gate_idx else None
-    spectrum_detector = (
-        SpectrumDetector(
-            audio_channel_indices=audio_idx,
-            sample_rate=src.sample_rate,
-            block_size=src.block_size,
-        )
-        if audio_idx else None
+    all_channels = list(range(src.n_channels))
+    cv_detector = CVDetector(all_channels, block_rate_hz=block_rate)
+    gate_detector = GateDetector(all_channels)
+    spectrum_detector = SpectrumDetector(
+        audio_channel_indices=all_channels,
+        sample_rate=src.sample_rate,
+        block_size=src.block_size,
     )
 
     # ---- OSC sender ---- #
@@ -162,10 +167,6 @@ def run(
         )
         slow_thread.start()
 
-    # Per-channel role string list (length n_channels), used by the WS
-    # broadcaster so the web UI can render per-role widgets.
-    roles = [channel_map.role(i).value for i in range(src.n_channels)]
-
     audio_thread = threading.Thread(
         target=fast_features_loop,
         args=(src, bus, stop_event, audio_buffer),
@@ -174,14 +175,19 @@ def run(
             "gate_detector": gate_detector,
             "spectrum_detector": spectrum_detector,
             "osc_sender": osc_sender,
-            "roles": roles,
+            "roles_controller": roles_controller,
         },
         name="audio_features_fast",
         daemon=True,
     )
     audio_thread.start()
 
-    web_app = make_app(bus, slow_bus=slow_bus, broadcast_hz=broadcast_hz)
+    web_app = make_app(
+        bus,
+        slow_bus=slow_bus,
+        broadcast_hz=broadcast_hz,
+        roles_controller=roles_controller,
+    )
     url = f"http://127.0.0.1:{port}"
 
     # 1-based channel display for the banner (matches jack labels).
