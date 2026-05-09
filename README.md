@@ -18,7 +18,10 @@ system you like. The browser-based meter is a viewer for sanity-
 checking what's coming through; synapse itself does no rendering.
 
 OSC schema is documented in [`docs/OSC_SCHEMA.md`](docs/OSC_SCHEMA.md).
-A starter Max patch is at [`examples/synapse_starter.maxpat`](examples/synapse_starter.maxpat).
+
+Two Max patches in `examples/`:
+- [`synapse_starter.maxpat`](examples/synapse_starter.maxpat) — minimal: ch1 CV / gate / spectrum widgets only, easy to read
+- [`synapse_full.maxpat`](examples/synapse_full.maxpat) — comprehensive: every category for all 14 channels (see [usage guide](examples/synapse_full_usage.md))
 
 ## Project history
 
