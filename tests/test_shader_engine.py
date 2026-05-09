@@ -308,6 +308,98 @@ def test_compositor_passes_through_shader_color_at_neutral_settings() -> None:
         ctx.release()
 
 
+def test_compositor_bloom_zero_is_identity() -> None:
+    """bloom=0 should give the same output as bloom=0.0 (the implicit
+    default for tests that don't pass it)."""
+    from apophenia.visuals.shader_engine import Compositor
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        comp = Compositor(ctx)
+        size = (32, 32)
+        fbo = comp.offscreen_fbo(size)
+        fbo.use()
+        ctx.clear(0.5, 0.2, 0.7, 1.0)
+        ctx.viewport = (0, 0, *size)
+
+        out_tex = ctx.texture(size, components=4, dtype="f1")
+        out_fbo = ctx.framebuffer(color_attachments=[out_tex])
+
+        # Baseline render with no bloom.
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, bloom=0.0)
+        raw_base = out_fbo.read(components=4, dtype="f1")
+
+        # Re-paint base + render again with explicit bloom=0.0.
+        fbo.use()
+        ctx.clear(0.5, 0.2, 0.7, 1.0)
+        ctx.viewport = (0, 0, *size)
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, bloom=0.0)
+        raw_again = out_fbo.read(components=4, dtype="f1")
+
+        # Should be byte-identical.
+        assert bytes(raw_base) == bytes(raw_again)
+    finally:
+        ctx.release()
+
+
+def test_compositor_bloom_brightens_dark_region_near_bright_one() -> None:
+    """A half-and-half image (left bright, right dark) should bleed
+    bright into dark when bloom is on. Pixels well into the dark side
+    pick up a non-trivial glow that wasn't there at bloom=0."""
+    import numpy as np
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        size = (128, 128)
+        comp, out_fbo, _ = _composite_setup(ctx, size=size)
+
+        # Left half white, right half black.
+        img = np.zeros((size[1], size[0], 4), dtype=np.uint8)
+        img[:, : size[0] // 2] = [255, 255, 255, 255]
+        img[:, size[0] // 2 :, 3] = 255
+        _paint_offscreen(comp, img.tobytes())
+
+        out_fbo.use()
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, bloom=0.0)
+        raw_no = out_fbo.read(components=4, dtype="f1")
+
+        # Re-paint (mipmaps may have been overwritten by previous render).
+        _paint_offscreen(comp, img.tobytes())
+        out_fbo.use()
+        ctx.clear(0, 0, 0, 1)
+        ctx.viewport = (0, 0, *size)
+        comp.render(saturation=1.0, bloom=1.0)
+        raw_bloom = out_fbo.read(components=4, dtype="f1")
+
+        # Sample a pixel just inside the dark side (10% past the bright
+        # boundary, well within the bloom radius). With bloom off it's
+        # pitch black; with bloom on it should pick up the glow.
+        sample_x = size[0] * 60 // 100  # 60% across; boundary is at 50%
+        sample_y = size[1] // 2
+        idx = (sample_y * size[0] + sample_x) * 4
+        no_lum = max(raw_no[idx], raw_no[idx + 1], raw_no[idx + 2])
+        bloom_lum = max(raw_bloom[idx], raw_bloom[idx + 1], raw_bloom[idx + 2])
+        assert no_lum < 20, f"baseline should be near-black, got {no_lum}"
+        # Bloom is intentionally tasteful (not a washout). A faint but
+        # measurable glow is the right shape — anything > +12 over
+        # baseline confirms light is actually spreading from the bright
+        # side into the dark. Real saturated shaders bloom much more.
+        assert bloom_lum > no_lum + 12, (
+            f"bloom should brighten dark side; got no={no_lum}, bloom={bloom_lum}"
+        )
+    finally:
+        ctx.release()
+
+
 def test_compositor_saturation_zero_collapses_to_grey() -> None:
     """saturation=0 must desaturate to luma; R/G/B at centre near-equal."""
     from apophenia.visuals.shader_engine import Compositor

@@ -296,7 +296,14 @@ class Compositor:
         self._fbo: moderngl.Framebuffer | None = None
 
     def offscreen_fbo(self, size: tuple[int, int]) -> moderngl.Framebuffer:
-        """Return the offscreen FBO, recreating it if `size` changed."""
+        """Return the offscreen FBO, recreating it if `size` changed.
+
+        The colour attachment uses LINEAR_MIPMAP_LINEAR filtering so the
+        compositor can pyramid-bloom by reading multiple mipmap levels
+        in `composite.frag` (each level halves resolution → naturally
+        low-pass filtered → cheap approximation of a Gaussian-blurred
+        version of the same scene).
+        """
         if size != self._fbo_size or self._fbo is None:
             if self._shader_tex is not None:
                 self._shader_tex.release()
@@ -305,7 +312,13 @@ class Compositor:
             self._shader_tex = self.ctx.texture(size, components=4, dtype="f1")
             self._shader_tex.repeat_x = False
             self._shader_tex.repeat_y = False
-            self._shader_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            # Trilinear sampling: linear within each mip + linear across.
+            self._shader_tex.filter = (
+                moderngl.LINEAR_MIPMAP_LINEAR,
+                moderngl.LINEAR,
+            )
+            # Allocate the mipmap chain (no data yet; we re-build each frame).
+            self._shader_tex.build_mipmaps()
             self._fbo = self.ctx.framebuffer(color_attachments=[self._shader_tex])
             self._fbo_size = size
         return self._fbo
@@ -317,6 +330,7 @@ class Compositor:
         glitch: float = 0.0,
         chromatic: float = 0.0,
         kaleidoscope_segments: int = 1,
+        bloom: float = 0.0,
     ) -> None:
         """Draw the composite to the currently-bound framebuffer.
 
@@ -330,6 +344,12 @@ class Compositor:
 
         if self._shader_tex is None:
             return  # offscreen_fbo() never called; nothing to composite
+
+        # Refresh the mipmap chain from the freshly-rendered base level.
+        # ~1ms at 1080p — calls glGenerateMipmap on the GPU.
+        if bloom > 0.0:
+            self._shader_tex.build_mipmaps()
+
         self._shader_tex.use(location=0)
 
         _set_uniform(self.program, "u_saturation", float(saturation))
@@ -337,6 +357,7 @@ class Compositor:
         _set_uniform(self.program, "u_chromatic", float(chromatic))
         _set_uniform(self.program, "u_kaleidoscope_segments", int(kaleidoscope_segments))
         _set_uniform(self.program, "u_time", float(time_s))
+        _set_uniform(self.program, "u_bloom", float(bloom))
 
         self.vao.render(moderngl.TRIANGLE_STRIP)
 
@@ -441,17 +462,20 @@ class ApopheniaWindow(mglw.WindowConfig):
             glitch = state.fx.glitch
             chromatic = state.fx.chromatic
             kaleidoscope = state.fx.kaleidoscope
+            bloom = state.fx.bloom
         else:
             saturation = 1.0
             glitch = 0.0
             chromatic = 0.0
             kaleidoscope = 1
+            bloom = 0.0
         self.compositor.render(
             saturation=saturation,
             time_s=time_s,
             glitch=glitch,
             chromatic=chromatic,
             kaleidoscope_segments=kaleidoscope,
+            bloom=bloom,
         )
 
         self._frame_count += 1
