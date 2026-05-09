@@ -31,7 +31,7 @@
 		"enablehscroll" : 1,
 		"enablevscroll" : 1,
 		"devicewidth" : 0.0,
-		"description" : "synapse starter — receives synapse OSC streams on UDP 9000",
+		"description" : "synapse starter — receives synapse OSC streams on UDP 9000 (ch1 only)",
 		"digest" : "",
 		"tags" : "",
 		"style" : "",
@@ -41,59 +41,43 @@
 			{ "box" :  {
 				"id" : "obj-title",
 				"maxclass" : "comment",
-				"text" : "synapse → MaxMSP starter\n\nReceives the OSC streams documented in docs/OSC_SCHEMA.md.\nDefault: localhost UDP 9000. Change the [udpreceive] arg if synapse runs elsewhere.",
-				"patching_rect" : [ 30.0, 20.0, 540.0, 80.0 ],
+				"text" : "synapse → MaxMSP starter (ch1 only)\n\nReceives the OSC streams documented in docs/OSC_SCHEMA.md. Default: localhost UDP 9000.\nThis patch wires up just channel 1 of each category as a worked example —\nuses one [route] per full address, since chained OSC routing isn't reliable in Max.",
+				"patching_rect" : [ 30.0, 20.0, 700.0, 90.0 ],
 				"fontsize" : 13.0,
 				"numinlets" : 1,
 				"numoutlets" : 0
 			} },
+
 			{ "box" :  {
 				"id" : "obj-udpreceive",
 				"maxclass" : "newobj",
 				"text" : "udpreceive 9000",
-				"patching_rect" : [ 30.0, 110.0, 130.0, 22.0 ],
+				"patching_rect" : [ 30.0, 130.0, 130.0, 22.0 ],
 				"numinlets" : 1,
 				"numoutlets" : 1,
 				"outlettype" : [ "" ]
 			} },
+
 			{ "box" :  {
-				"id" : "obj-route-synapse",
+				"id" : "obj-comment-cv",
+				"maxclass" : "comment",
+				"text" : "/synapse/cv/1  — float, smoothed DC. Throttled (only sent when changed by ≥ cv_eps).",
+				"patching_rect" : [ 30.0, 175.0, 600.0, 20.0 ]
+			} },
+			{ "box" :  {
+				"id" : "obj-rt-cv1",
 				"maxclass" : "newobj",
-				"text" : "route /synapse",
-				"patching_rect" : [ 30.0, 145.0, 130.0, 22.0 ],
+				"text" : "route /synapse/cv/1",
+				"patching_rect" : [ 30.0, 200.0, 200.0, 22.0 ],
 				"numinlets" : 1,
 				"numoutlets" : 2,
 				"outlettype" : [ "", "" ]
 			} },
 			{ "box" :  {
-				"id" : "obj-route-categories",
-				"maxclass" : "newobj",
-				"text" : "route cv gate gate_event rms onset centroid peak spectrum block clap",
-				"patching_rect" : [ 30.0, 215.0, 540.0, 22.0 ],
-				"numinlets" : 1,
-				"numoutlets" : 11,
-				"outlettype" : [ "", "", "", "", "", "", "", "", "", "", "" ]
-			} },
-			{ "box" :  {
-				"id" : "obj-comment-cv",
-				"maxclass" : "comment",
-				"text" : "/cv/N float — smoothed DC. Only sent when changed (cv_eps).",
-				"patching_rect" : [ 30.0, 260.0, 360.0, 20.0 ]
-			} },
-			{ "box" :  {
-				"id" : "obj-route-cv-channels",
-				"maxclass" : "newobj",
-				"text" : "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
-				"patching_rect" : [ 30.0, 285.0, 460.0, 22.0 ],
-				"numinlets" : 1,
-				"numoutlets" : 15,
-				"outlettype" : [ "", "", "", "", "", "", "", "", "", "", "", "", "", "", "" ]
-			} },
-			{ "box" :  {
 				"id" : "obj-cv1-num",
 				"maxclass" : "flonum",
 				"text" : "0.",
-				"patching_rect" : [ 30.0, 320.0, 60.0, 22.0 ],
+				"patching_rect" : [ 30.0, 230.0, 80.0, 22.0 ],
 				"numinlets" : 1,
 				"numoutlets" : 2,
 				"outlettype" : [ "", "bang" ]
@@ -101,28 +85,29 @@
 			{ "box" :  {
 				"id" : "obj-cv1-label",
 				"maxclass" : "comment",
-				"text" : "ch1 CV",
-				"patching_rect" : [ 95.0, 322.0, 60.0, 20.0 ]
+				"text" : "ch1 CV value",
+				"patching_rect" : [ 120.0, 232.0, 100.0, 20.0 ]
 			} },
+
 			{ "box" :  {
 				"id" : "obj-comment-gate",
 				"maxclass" : "comment",
-				"text" : "/gate/N int 0|1 — current state every block. /gate_event/N \"rising\"|\"falling\" — edge events.",
-				"patching_rect" : [ 30.0, 365.0, 480.0, 20.0 ]
+				"text" : "/synapse/gate/1  — int 0|1, current state every block.",
+				"patching_rect" : [ 30.0, 280.0, 480.0, 20.0 ]
 			} },
 			{ "box" :  {
-				"id" : "obj-route-gate-channels",
+				"id" : "obj-rt-gate1",
 				"maxclass" : "newobj",
-				"text" : "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
-				"patching_rect" : [ 30.0, 390.0, 460.0, 22.0 ],
+				"text" : "route /synapse/gate/1",
+				"patching_rect" : [ 30.0, 305.0, 200.0, 22.0 ],
 				"numinlets" : 1,
-				"numoutlets" : 15,
-				"outlettype" : [ "", "", "", "", "", "", "", "", "", "", "", "", "", "", "" ]
+				"numoutlets" : 2,
+				"outlettype" : [ "", "" ]
 			} },
 			{ "box" :  {
 				"id" : "obj-gate1-toggle",
 				"maxclass" : "toggle",
-				"patching_rect" : [ 30.0, 425.0, 24.0, 24.0 ],
+				"patching_rect" : [ 30.0, 335.0, 28.0, 28.0 ],
 				"numinlets" : 1,
 				"numoutlets" : 1,
 				"outlettype" : [ "int" ],
@@ -132,50 +117,58 @@
 				"id" : "obj-gate1-label",
 				"maxclass" : "comment",
 				"text" : "ch1 gate state",
-				"patching_rect" : [ 60.0, 428.0, 110.0, 20.0 ]
+				"patching_rect" : [ 70.0, 339.0, 110.0, 20.0 ]
+			} },
+
+			{ "box" :  {
+				"id" : "obj-comment-event",
+				"maxclass" : "comment",
+				"text" : "/synapse/gate_event/1  — string \"rising\"|\"falling\". Bangs only on transitions.",
+				"patching_rect" : [ 30.0, 380.0, 540.0, 20.0 ]
 			} },
 			{ "box" :  {
-				"id" : "obj-route-event-channels",
+				"id" : "obj-rt-event1",
 				"maxclass" : "newobj",
-				"text" : "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
-				"patching_rect" : [ 30.0, 465.0, 460.0, 22.0 ],
+				"text" : "route /synapse/gate_event/1",
+				"patching_rect" : [ 30.0, 405.0, 240.0, 22.0 ],
 				"numinlets" : 1,
-				"numoutlets" : 15,
-				"outlettype" : [ "", "", "", "", "", "", "", "", "", "", "", "", "", "", "" ]
+				"numoutlets" : 2,
+				"outlettype" : [ "", "" ]
 			} },
 			{ "box" :  {
-				"id" : "obj-gate1-event-bang",
+				"id" : "obj-event1-bang",
 				"maxclass" : "button",
-				"patching_rect" : [ 30.0, 500.0, 24.0, 24.0 ],
+				"patching_rect" : [ 30.0, 435.0, 28.0, 28.0 ],
 				"numinlets" : 1,
 				"numoutlets" : 1,
 				"outlettype" : [ "bang" ]
 			} },
 			{ "box" :  {
-				"id" : "obj-gate1-event-label",
+				"id" : "obj-event1-label",
 				"maxclass" : "comment",
-				"text" : "ch1 rising-edge bang (any edge → bang; filter for \"rising\" / \"falling\" with [route] if needed)",
-				"patching_rect" : [ 60.0, 503.0, 540.0, 20.0 ]
+				"text" : "ch1 edge bang (rising/falling — use another [route rising falling] to split if needed)",
+				"patching_rect" : [ 70.0, 439.0, 600.0, 20.0 ]
 			} },
+
 			{ "box" :  {
 				"id" : "obj-comment-spectrum",
 				"maxclass" : "comment",
-				"text" : "/spectrum/N — 32 log-spaced magnitude bins per audio channel @ ~30Hz. Drives [multislider] directly.",
-				"patching_rect" : [ 30.0, 540.0, 600.0, 20.0 ]
+				"text" : "/synapse/spectrum/1  — 32 log-spaced magnitude bins, ~30Hz. Audio-role channels only.",
+				"patching_rect" : [ 30.0, 480.0, 600.0, 20.0 ]
 			} },
 			{ "box" :  {
-				"id" : "obj-route-spectrum-channels",
+				"id" : "obj-rt-spec1",
 				"maxclass" : "newobj",
-				"text" : "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
-				"patching_rect" : [ 30.0, 565.0, 460.0, 22.0 ],
+				"text" : "route /synapse/spectrum/1",
+				"patching_rect" : [ 30.0, 505.0, 240.0, 22.0 ],
 				"numinlets" : 1,
-				"numoutlets" : 15,
-				"outlettype" : [ "", "", "", "", "", "", "", "", "", "", "", "", "", "", "" ]
+				"numoutlets" : 2,
+				"outlettype" : [ "", "" ]
 			} },
 			{ "box" :  {
 				"id" : "obj-spec1-mslider",
 				"maxclass" : "multislider",
-				"patching_rect" : [ 30.0, 600.0, 320.0, 80.0 ],
+				"patching_rect" : [ 30.0, 535.0, 480.0, 90.0 ],
 				"numinlets" : 1,
 				"numoutlets" : 2,
 				"outlettype" : [ "", "bang" ],
@@ -190,60 +183,47 @@
 				"id" : "obj-spec1-label",
 				"maxclass" : "comment",
 				"text" : "ch1 spectrum (32 bins)",
-				"patching_rect" : [ 360.0, 625.0, 200.0, 20.0 ]
+				"patching_rect" : [ 520.0, 565.0, 200.0, 20.0 ]
 			} },
-			{ "box" :  {
-				"id" : "obj-comment-other",
-				"maxclass" : "comment",
-				"text" : "Other streams (rms, peak, centroid, onset, block, clap) routed but not visualised — extend as needed.",
-				"patching_rect" : [ 30.0, 700.0, 700.0, 20.0 ]
-			} },
+
 			{ "box" :  {
 				"id" : "obj-comment-extend",
 				"maxclass" : "comment",
-				"text" : "To forward to Unreal: tap any of the routed signals → [udpsend <unreal-host> <unreal-port>] with whatever address pattern Unreal is set up to receive.\n\nFull schema in docs/OSC_SCHEMA.md.",
-				"patching_rect" : [ 30.0, 745.0, 800.0, 60.0 ]
+				"text" : "To extend: copy any [route /synapse/<feat>/1] and change the channel suffix.\nTo forward to Unreal: tap any route's outlet → [udpsend <unreal-host> <unreal-port>].\nFull OSC schema in docs/OSC_SCHEMA.md; full 14-channel receiver in synapse_full.maxpat.",
+				"patching_rect" : [ 30.0, 645.0, 800.0, 60.0 ]
 			} }
 		],
 		"lines" : [
 			{ "patchline" :  {
 				"source" : [ "obj-udpreceive", 0 ],
-				"destination" : [ "obj-route-synapse", 0 ]
+				"destination" : [ "obj-rt-cv1", 0 ]
 			} },
 			{ "patchline" :  {
-				"source" : [ "obj-route-synapse", 0 ],
-				"destination" : [ "obj-route-categories", 0 ]
+				"source" : [ "obj-udpreceive", 0 ],
+				"destination" : [ "obj-rt-gate1", 0 ]
 			} },
 			{ "patchline" :  {
-				"source" : [ "obj-route-categories", 0 ],
-				"destination" : [ "obj-route-cv-channels", 0 ]
+				"source" : [ "obj-udpreceive", 0 ],
+				"destination" : [ "obj-rt-event1", 0 ]
 			} },
 			{ "patchline" :  {
-				"source" : [ "obj-route-cv-channels", 0 ],
+				"source" : [ "obj-udpreceive", 0 ],
+				"destination" : [ "obj-rt-spec1", 0 ]
+			} },
+			{ "patchline" :  {
+				"source" : [ "obj-rt-cv1", 0 ],
 				"destination" : [ "obj-cv1-num", 0 ]
 			} },
 			{ "patchline" :  {
-				"source" : [ "obj-route-categories", 1 ],
-				"destination" : [ "obj-route-gate-channels", 0 ]
-			} },
-			{ "patchline" :  {
-				"source" : [ "obj-route-gate-channels", 0 ],
+				"source" : [ "obj-rt-gate1", 0 ],
 				"destination" : [ "obj-gate1-toggle", 0 ]
 			} },
 			{ "patchline" :  {
-				"source" : [ "obj-route-categories", 2 ],
-				"destination" : [ "obj-route-event-channels", 0 ]
+				"source" : [ "obj-rt-event1", 0 ],
+				"destination" : [ "obj-event1-bang", 0 ]
 			} },
 			{ "patchline" :  {
-				"source" : [ "obj-route-event-channels", 0 ],
-				"destination" : [ "obj-gate1-event-bang", 0 ]
-			} },
-			{ "patchline" :  {
-				"source" : [ "obj-route-categories", 7 ],
-				"destination" : [ "obj-route-spectrum-channels", 0 ]
-			} },
-			{ "patchline" :  {
-				"source" : [ "obj-route-spectrum-channels", 0 ],
+				"source" : [ "obj-rt-spec1", 0 ],
 				"destination" : [ "obj-spec1-mslider", 0 ]
 			} }
 		]
