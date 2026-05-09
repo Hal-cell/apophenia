@@ -108,6 +108,10 @@ add(box(
 
 
 # --- OSC chain --------------------------------------------------------------
+# udpreceive in Max 8+ auto-parses incoming OSC bundles into individual
+# address-pattern Max messages on its outlet — no separate [oscparse]
+# needed. Older Max / non-standard installs may need [oscparse] inserted
+# between udpreceive and the first [route].
 add(box(
     id="udpreceive",
     maxclass="newobj",
@@ -117,18 +121,10 @@ add(box(
     outlettype=[""],
 ))
 add(box(
-    id="oscparse",
-    maxclass="newobj",
-    text="oscparse",
-    patching_rect=[30.0, 105.0, 80.0, 22.0],
-    numinlets=1, numoutlets=2,
-    outlettype=["", ""],
-))
-add(box(
     id="route-synapse",
     maxclass="newobj",
     text="route /synapse",
-    patching_rect=[30.0, 135.0, 130.0, 22.0],
+    patching_rect=[30.0, 105.0, 130.0, 22.0],
     numinlets=1, numoutlets=2,
     outlettype=["", ""],
 ))
@@ -136,16 +132,15 @@ add(box(
     id="route-cat",
     maxclass="newobj",
     text="route cv cv_rate gate gate_event rms peak centroid onset spectrum block clap",
-    patching_rect=[30.0, 165.0, 660.0, 22.0],
+    patching_rect=[30.0, 135.0, 660.0, 22.0],
     numinlets=1, numoutlets=12,
     outlettype=[""] * 12,
 ))
 
-add_line("udpreceive", 0, "oscparse", 0)
-add_line("oscparse", 0, "route-synapse", 0)
+add_line("udpreceive", 0, "route-synapse", 0)
 add_line("route-synapse", 0, "route-cat", 0)
-# wire status counter: any incoming oscparse → tick the counter
-add_line("oscparse", 0, "status-tick", 0)
+# Wire status counter: every incoming OSC message ticks the counter.
+add_line("udpreceive", 0, "status-tick", 0)
 add_line("status-tick", 0, "status-counter", 0)
 add_line("status-counter", 0, "status-count", 0)
 # block heartbeat: route-cat outlet 9 (block) → status-block

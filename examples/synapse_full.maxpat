@@ -188,31 +188,12 @@
 			},
 			{
 				"box": {
-					"id": "oscparse",
-					"maxclass": "newobj",
-					"text": "oscparse",
-					"patching_rect": [
-						30.0,
-						105.0,
-						80.0,
-						22.0
-					],
-					"numinlets": 1,
-					"numoutlets": 2,
-					"outlettype": [
-						"",
-						""
-					]
-				}
-			},
-			{
-				"box": {
 					"id": "route-synapse",
 					"maxclass": "newobj",
 					"text": "route /synapse",
 					"patching_rect": [
 						30.0,
-						135.0,
+						105.0,
 						130.0,
 						22.0
 					],
@@ -231,7 +212,7 @@
 					"text": "route cv cv_rate gate gate_event rms peak centroid onset spectrum block clap",
 					"patching_rect": [
 						30.0,
-						165.0,
+						135.0,
 						660.0,
 						22.0
 					],
@@ -4467,18 +4448,6 @@
 						0
 					],
 					"destination": [
-						"oscparse",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"oscparse",
-						0
-					],
-					"destination": [
 						"route-synapse",
 						0
 					]
@@ -4499,7 +4468,7 @@
 			{
 				"patchline": {
 					"source": [
-						"oscparse",
+						"udpreceive",
 						0
 					],
 					"destination": [

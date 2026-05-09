@@ -10,10 +10,7 @@ shorter and easier to read.
 ## What's in the patch
 
 ```
-[udpreceive 9000]
-   │
-   ▼
-[oscparse]
+[udpreceive 9000]   ← Max 8+ auto-parses incoming OSC bundles
    │
    ▼
 [route /synapse]
@@ -89,6 +86,27 @@ example, to forward channel-1 RMS to Unreal at `192.168.1.10:7000`:
 
 You can keep the existing display widgets attached too — Max
 patches can fanout one outlet to multiple destinations.
+
+## A note on `[oscparse]`
+
+The patch **does not** use `[oscparse]`. In Max 8+, `[udpreceive]`
+already parses incoming OSC bundles and emits each constituent
+message with its address pattern, so the chain is just
+`udpreceive → route /synapse → route <category> → ...`.
+
+If you are on an older Max (≤ Max 7) and the messages don't reach
+the `route` objects, insert `[oscparse]` between `udpreceive` and
+`route /synapse`:
+
+```
+[udpreceive 9000]
+   │
+   ▼
+[oscparse]
+   │
+   ▼
+[route /synapse]
+```
 
 ## If nothing shows up
 

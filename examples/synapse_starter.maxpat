@@ -57,19 +57,10 @@
 				"outlettype" : [ "" ]
 			} },
 			{ "box" :  {
-				"id" : "obj-oscparse",
-				"maxclass" : "newobj",
-				"text" : "oscparse",
-				"patching_rect" : [ 30.0, 145.0, 80.0, 22.0 ],
-				"numinlets" : 1,
-				"numoutlets" : 1,
-				"outlettype" : [ "" ]
-			} },
-			{ "box" :  {
 				"id" : "obj-route-synapse",
 				"maxclass" : "newobj",
 				"text" : "route /synapse",
-				"patching_rect" : [ 30.0, 180.0, 130.0, 22.0 ],
+				"patching_rect" : [ 30.0, 145.0, 130.0, 22.0 ],
 				"numinlets" : 1,
 				"numoutlets" : 2,
 				"outlettype" : [ "", "" ]
@@ -217,10 +208,6 @@
 		"lines" : [
 			{ "patchline" :  {
 				"source" : [ "obj-udpreceive", 0 ],
-				"destination" : [ "obj-oscparse", 0 ]
-			} },
-			{ "patchline" :  {
-				"source" : [ "obj-oscparse", 0 ],
 				"destination" : [ "obj-route-synapse", 0 ]
 			} },
 			{ "patchline" :  {
