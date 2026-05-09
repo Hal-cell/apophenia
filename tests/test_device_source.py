@@ -19,8 +19,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from apophenia.audio import device as device_mod
-from apophenia.audio.device import (
+from conduit.audio import device as device_mod
+from conduit.audio.device import (
     DeviceSource,
     DeviceSourceError,
     _negotiate_sample_rate,

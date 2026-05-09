@@ -1,32 +1,35 @@
 [project]
-name = "apophenia"
-version = "2.0.0"
-description = "Self-evolving audio-reactive AV instrument driven by GLSL shaders"
+name = "conduit"
+version = "3.0.0"
+description = "Multichannel audio analyser → MaxMSP bridge (CV / gate / spectrum over OSC)"
 authors = [{ name = "Hal Xu" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.12"
 
-# Phase 13 strip: dropped the V1 control plane (fastapi / uvicorn /
-# python-osc / web UI) when the autopilot replaced human control.
-# Base deps are now: audio capture, schema, CLI plumbing.
+# Phase-16 pivot: this used to be an audio-reactive AV instrument
+# (the apophenia project). The visual stack is gone; what's left is
+# the audio capture + feature pipeline + a minimal FastAPI server
+# that hosts the web meter for live debugging. CV / gate / spectrum
+# extraction + OSC output to MaxMSP land in the next phase.
 dependencies = [
     "numpy>=1.26",
     "sounddevice>=0.4.6",
     "soundfile>=0.12",
-    "pydantic>=2.5",
     "typer>=0.9",
     "rich>=13.7",
+    # OSC output to MaxMSP / any OSC consumer.
+    "python-osc>=1.8",
+    # Web meter UI (FastAPI + WebSocket broadcast).
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
 ]
 
 [project.optional-dependencies]
-visuals = [
-    "moderngl>=5.10",
-    "moderngl-window>=2.4",
-    "glfw>=2.6",  # explicit window backend; reliable on macOS / X11 / Wayland
-]
 clap = [
-    # CLAP audio embedding (slow tier).
+    # CLAP audio embedding (slow tier). Optional; useful as an extra
+    # OSC stream if you want a high-level mood / genre vector
+    # alongside CV / gate / spectrum.
     "torch>=2.2",
     "transformers>=4.40",
     "safetensors>=0.4",
@@ -35,13 +38,14 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.3",
     "mypy>=1.9",
+    "httpx>=0.27",  # required by fastapi.testclient
 ]
 
 [project.scripts]
-apophenia = "apophenia.cli:main"
+conduit = "conduit.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["apophenia"]
+packages = ["conduit"]
 
 [build-system]
 requires = ["hatchling"]
@@ -65,7 +69,5 @@ warn_unused_ignores = true
 module = [
     "sounddevice",
     "soundfile",
-    "moderngl",
-    "moderngl_window",
 ]
 ignore_missing_imports = true

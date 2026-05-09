@@ -1,11 +1,18 @@
-"""apophenia CLI entry point.
+"""conduit CLI entry point.
 
 Subcommands:
-    run         spin up audio capture + autopilot + GLSL render window
+    run         spin up audio capture + meter web UI
     devices     list available Core Audio input devices
     smoke       run the source for a few seconds and print frame stats
     version     print package + dep versions
     config      print resolved paths
+
+Phase-16 pivot: this used to be an audio-reactive AV instrument.
+Going forward it's a multichannel audio analyser that extracts
+CV / gate / spectrum from each input channel and forwards the
+data to MaxMSP (or any OSC consumer) for further routing into
+Unreal / external systems. The web UI is purely a viewer for
+debugging audio.
 """
 
 from __future__ import annotations
@@ -13,24 +20,26 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import webbrowser
 
 import numpy as np
 import typer
+import uvicorn
 from rich.console import Console
 
-from apophenia.audio.features_fast import FeatureBus, fast_features_loop
-from apophenia.audio.features_slow import (
+from conduit.audio.features_fast import FeatureBus, fast_features_loop
+from conduit.audio.features_slow import (
     CLAP_WINDOW_SECONDS,
     AudioBuffer,
     SlowBus,
     slow_features_loop,
 )
-from apophenia.audio.source import parse_source_arg
-from apophenia.autopilot import Modulator
+from conduit.audio.source import parse_source_arg
+from conduit.control.server import make_app
 
 app = typer.Typer(
-    name="apophenia",
-    help="Self-evolving audio-reactive AV instrument.",
+    name="conduit",
+    help="Multichannel audio analyser → MaxMSP bridge.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -45,23 +54,24 @@ def run(
         "-s",
         help="Audio source spec: 'mock', 'mock:<pattern>', 'file:<path>', 'device:<name>'.",
     ),
+    port: int = typer.Option(8000, "--port", "-p", help="HTTP / WebSocket port."),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Don't auto-open the meter URL in your default browser."
+    ),
+    broadcast_hz: float = typer.Option(
+        30.0, "--broadcast-hz", help="WebSocket meter broadcast rate."
+    ),
     clap: bool = typer.Option(
         True,
         "--clap/--no-clap",
         help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB.",
     ),
-    seed: int = typer.Option(
-        0,
-        "--seed",
-        help="Autopilot RNG seed. Same seed → same wanderer trajectories. "
-             "0 = use wallclock for a fresh evolution each launch.",
-    ),
 ) -> None:
-    """Run audio capture + autopilot + render window.
+    """Run audio capture + meter web UI.
 
-    The render window owns the main thread (Cocoa requires GUI on
-    main); audio + slow tier live in daemon threads. The autopilot
-    is in-process and called per render frame, no thread of its own.
+    Audio runs in a daemon thread; the optional CLAP slow tier in a
+    second daemon thread; the FastAPI / uvicorn server in the main
+    thread (it's the only thing that needs to block).
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -69,9 +79,8 @@ def run(
     bus = FeatureBus()
     stop_event = threading.Event()
 
-    # Slow tier (CLAP). Optional; doesn't drive the autopilot yet but
-    # the bus is wired so future modulator versions can read mood
-    # vectors from it.
+    # Slow tier (CLAP). Optional. Doesn't drive any output yet, but the
+    # bus is wired so future OSC streams can carry mood / embedding.
     slow_bus: SlowBus | None = None
     audio_buffer: AudioBuffer | None = None
     slow_thread: threading.Thread | None = None
@@ -98,54 +107,27 @@ def run(
     )
     audio_thread.start()
 
-    # Resolve seed: 0 means wallclock-derived (fresh each launch).
-    real_seed = seed if seed != 0 else (time.time_ns() & 0x7FFFFFFF)
-    modulator = Modulator(seed=real_seed)
+    web_app = make_app(bus, slow_bus=slow_bus, broadcast_hz=broadcast_hz)
+    url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia · running (autopilot)[/bold green]")
+    console.print("[bold green]conduit · running[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
     )
+    console.print(f"  meter:   [cyan]{url}[/cyan]")
     console.print(f"  clap:    {'[green]on[/green] (~1Hz)' if clap else '[yellow]off[/yellow]'}")
-    console.print(f"  seed:    [cyan]{real_seed}[/cyan]")
-    console.print("  ctrl-c (terminal) or close window to stop")
+    console.print("  ws hz:   30")
+    console.print("  ctrl-c to stop")
     console.print()
 
+    if not no_browser:
+        threading.Timer(0.25, lambda: webbrowser.open(url)).start()
+
     try:
-        import moderngl_window as mglw
-
-        from apophenia.visuals.shader_engine import ApopheniaWindow
-    except ImportError as e:
-        console.print(
-            f"[red]render requires the visuals extra:[/red] {e}"
-        )
-        console.print("[yellow]install with:[/yellow] uv sync --extra visuals")
-        stop_event.set()
-        audio_thread.join(timeout=1.0)
-        if slow_thread is not None:
-            slow_thread.join(timeout=2.0)
-        return
-
-    ApopheniaWindow.bus = bus
-    ApopheniaWindow.modulator = modulator
-
-    # Bug workaround: moderngl_window's parse_args does
-    # `args or sys.argv[1:]` (line 384, mglw 3.1.1), and an empty list
-    # is falsy in Python, so passing `args=[]` to ask mglw to use only
-    # WindowConfig defaults still ends up parsing user's CLI argv —
-    # which contains typer's `run --source ... --clap` flags and
-    # crashes argparse. Temporarily swap sys.argv to just the program
-    # name so the fallback also yields an empty list.
-    import sys
-
-    saved_argv = sys.argv[:]
-    sys.argv = sys.argv[:1]
-    try:
-        mglw.run_window_config(ApopheniaWindow, args=[])
+        uvicorn.run(web_app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
     finally:
-        sys.argv = saved_argv
         stop_event.set()
         audio_thread.join(timeout=1.0)
         if slow_thread is not None:
@@ -155,7 +137,7 @@ def run(
 @app.command()
 def devices() -> None:
     """List Core Audio input devices visible to the system."""
-    from apophenia.audio.device import list_devices
+    from conduit.audio.device import list_devices
 
     devs = list_devices()
     if not devs:
@@ -173,7 +155,7 @@ def devices() -> None:
         )
     console.print()
     console.print(
-        "[dim]use:[/dim] [cyan]apophenia run --source device:\"<exact name>\"[/cyan]"
+        "[dim]use:[/dim] [cyan]conduit run --source device:\"<exact name>\"[/cyan]"
     )
 
 
@@ -220,17 +202,17 @@ def smoke(
 
 @app.command()
 def version() -> None:
-    """Print apophenia + key dep versions and the active Python interpreter."""
+    """Print conduit + key dep versions and the active Python interpreter."""
     import importlib.metadata as md
     import platform
     import sys
 
     try:
-        ver = md.version("apophenia")
+        ver = md.version("conduit")
     except md.PackageNotFoundError:
         ver = "unknown (not installed)"
 
-    console.print(f"[bold]apophenia[/bold] {ver}")
+    console.print(f"[bold]conduit[/bold] {ver}")
     console.print(f"  python:      {platform.python_version()} ({sys.executable})")
     console.print(f"  platform:    {platform.system()} {platform.machine()}")
 
@@ -241,23 +223,23 @@ def version() -> None:
             return "[dim]not installed[/dim]"
 
     console.print(f"  numpy:       {_pkg('numpy')}")
-    console.print(f"  pydantic:    {_pkg('pydantic')}")
+    console.print(f"  fastapi:     {_pkg('fastapi')}")
     console.print(f"  sounddevice: {_pkg('sounddevice')}")
-    console.print(f"  moderngl:    {_pkg('moderngl')}    (visuals extra)")
+    console.print(f"  python-osc:  {_pkg('python-osc')}")
     console.print(f"  torch:       {_pkg('torch')}    (clap extra)")
     console.print(f"  transformers:{_pkg('transformers')}    (clap extra)")
 
 
 @app.command()
 def config() -> None:
-    """Print the resolved paths apophenia uses + default audio device."""
-    console.print("[bold]apophenia · resolved paths[/bold]")
-    console.print("  [dim](no persistent state — autopilot is deterministic from seed)[/dim]")
+    """Print resolved paths + default audio device."""
+    console.print("[bold]conduit · resolved paths[/bold]")
+    console.print("  [dim](no persistent state — analyser is stateless across launches)[/dim]")
 
     console.print()
     console.print("[bold]default audio source:[/bold]")
     try:
-        from apophenia.audio.device import list_devices
+        from conduit.audio.device import list_devices
 
         devs = list_devices()
         if not devs:
@@ -270,7 +252,7 @@ def config() -> None:
                 f"{primary['default_samplerate']:.0f}Hz, idx {primary['index']})"
             )
             console.print(
-                "  [dim]list all with: apophenia devices[/dim]"
+                "  [dim]list all with: conduit devices[/dim]"
             )
     except Exception as e:  # noqa: BLE001
         console.print(f"  [red]sounddevice unavailable:[/red] {e}")

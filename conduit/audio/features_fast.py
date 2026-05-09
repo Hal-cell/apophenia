@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
-from apophenia.audio.source import AudioSource
+from conduit.audio.source import AudioSource
 
 # --------------------------------------------------------------------------- #
 # Tuning constants
