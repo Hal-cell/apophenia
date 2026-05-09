@@ -29,7 +29,6 @@ def test_index_returns_html() -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert "apophenia" in r.text.lower()
-    # Phase 5 UI is the control panel — sanity check a couple of fixtures.
     assert "control" in r.text.lower()
     assert "preset" in r.text.lower()
 
@@ -45,8 +44,6 @@ def test_health_endpoint_no_data() -> None:
         "block_count": 0,
         "slow_active": False,
         "slow_updates": 0,
-        "ai_active": False,
-        "ai_gens": 0,
     }
 
 
@@ -60,19 +57,10 @@ def test_health_endpoint_with_data() -> None:
         "block_count": 42,
         "slow_active": False,
         "slow_updates": 0,
-        "ai_active": False,
-        "ai_gens": 0,
     }
 
 
 def test_websocket_streams_features() -> None:
-    """Open /ws, expect at least one JSON message with our test data.
-
-    TestClient's websocket_connect is synchronous; it pulls one message
-    and we close. The server runs make_app's broadcast loop in the same
-    event loop the client is iterating, so the first message arrives
-    within the first broadcast period (~33ms at 30Hz default).
-    """
     bus = _bus_with(
         FastFeatures(
             rms=[0.05] * 14,
@@ -85,7 +73,7 @@ def test_websocket_streams_features() -> None:
             n_channels=14,
         )
     )
-    client = TestClient(make_app(bus, broadcast_hz=120))  # fast for test
+    client = TestClient(make_app(bus, broadcast_hz=120))
     with client.websocket_connect("/ws") as ws:
         msg = ws.receive_json()
         assert msg["block_count"] == 7
@@ -96,20 +84,14 @@ def test_websocket_streams_features() -> None:
 
 
 def test_websocket_skips_when_no_data() -> None:
-    """With an empty bus, /ws shouldn't crash — it just sleeps until data
-    is available. Connect, wait a tick, disconnect.
-    """
-    bus = _bus_with()  # empty
+    bus = _bus_with()
     client = TestClient(make_app(bus, broadcast_hz=120))
     with client.websocket_connect("/ws") as ws:
-        # No data → no message arrives. Closing the connection should
-        # cause the server to exit the loop cleanly without raising.
         ws.close()
-    # If we got here without an exception, behaviour is correct.
 
 
 # --------------------------------------------------------------------------- #
-# State API (Phase 5)
+# State API
 # --------------------------------------------------------------------------- #
 
 
@@ -119,29 +101,27 @@ def test_get_state_returns_default() -> None:
     r = client.get("/api/state")
     assert r.status_code == 200
     body = r.json()
-    assert body["blend"]["audio_text"] == 0.5
+    assert body["palette"]["saturation"] == 1.0
     assert body["transport"]["freeze"] is False
     assert len(body["channel_weight"]) == 14
 
 
-def test_patch_state_partial_blend() -> None:
+def test_patch_state_partial_palette() -> None:
     bus = _bus_with()
     state_bus = StateBus()
     client = TestClient(make_app(bus, state_bus=state_bus))
-    r = client.patch("/api/state", json={"blend": {"audio_text": 0.8}})
+    r = client.patch("/api/state", json={"palette": {"hue": 0.4}})
     assert r.status_code == 200
     body = r.json()
-    assert body["blend"]["audio_text"] == 0.8
-    # Untouched fields kept their defaults.
-    assert body["blend"]["clap_clip"] == 0.5
-    # And StateBus reflects it.
-    assert state_bus.get().blend.audio_text == 0.8
+    assert body["palette"]["hue"] == 0.4
+    assert body["palette"]["saturation"] == 1.0
+    assert state_bus.get().palette.hue == 0.4
 
 
 def test_patch_state_invalid_returns_422() -> None:
     bus = _bus_with()
     client = TestClient(make_app(bus, state_bus=StateBus()))
-    r = client.patch("/api/state", json={"blend": {"audio_text": 5.0}})
+    r = client.patch("/api/state", json={"palette": {"hue": 5.0}})
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert "errors" in detail
@@ -156,16 +136,16 @@ def test_patch_state_replaces_channel_weight_array() -> None:
     assert r.json()["channel_weight"] == weights
 
 
-def test_patch_state_text_prompt() -> None:
+def test_patch_state_fx_kaleidoscope() -> None:
     bus = _bus_with()
     client = TestClient(make_app(bus, state_bus=StateBus()))
-    r = client.patch("/api/state", json={"text": {"prompt": "deep violet"}})
+    r = client.patch("/api/state", json={"fx": {"kaleidoscope": 6}})
     assert r.status_code == 200
-    assert r.json()["text"]["prompt"] == "deep violet"
+    assert r.json()["fx"]["kaleidoscope"] == 6
 
 
 # --------------------------------------------------------------------------- #
-# Preset API (Phase 5)
+# Preset API
 # --------------------------------------------------------------------------- #
 
 
@@ -186,31 +166,27 @@ def test_get_presets_initially_loads_starter_bank(tmp_path: Path) -> None:
 
 def test_save_recall_clear_round_trip(tmp_path: Path) -> None:
     state_bus = StateBus()
-    state_bus.update({"blend": {"audio_text": 0.7}, "cfg": 8.0})
+    state_bus.update({"palette": {"hue": 0.7}, "fx": {"kaleidoscope": 8}})
     bus = _bus_with()
     client = TestClient(
         make_app(bus, state_bus=state_bus, preset_path=tmp_path / "presets.json")
     )
 
-    # Save current state into slot 13 with a distinctive label (slot 13 is
-    # empty in the starter bank, so we know we're testing fresh-save).
     r = client.post("/api/presets/13/save", json={"label": "user-test-save"})
     assert r.status_code == 200
     body = r.json()
     assert body["presets"][13]["label"] == "user-test-save"
-    assert body["presets"][13]["state"]["blend"]["audio_text"] == 0.7
-    # File on disk too.
+    assert body["presets"][13]["state"]["palette"]["hue"] == 0.7
+    assert body["presets"][13]["state"]["fx"]["kaleidoscope"] == 8
     assert (tmp_path / "presets.json").exists()
 
-    # Mutate state, then recall — should restore.
-    state_bus.update({"blend": {"audio_text": 0.1}, "cfg": 3.0})
-    assert state_bus.get().cfg == 3.0
+    state_bus.update({"palette": {"hue": 0.1}, "fx": {"kaleidoscope": 1}})
+    assert state_bus.get().fx.kaleidoscope == 1
     r = client.post("/api/presets/13/recall")
     assert r.status_code == 200
-    assert r.json()["blend"]["audio_text"] == 0.7
-    assert state_bus.get().cfg == 8.0
+    assert r.json()["palette"]["hue"] == 0.7
+    assert state_bus.get().fx.kaleidoscope == 8
 
-    # Clear it.
     r = client.post("/api/presets/13/clear")
     assert r.status_code == 200
     assert r.json()["presets"][13]["state"] is None
@@ -249,106 +225,26 @@ def test_presets_persist_across_app_instances(tmp_path: Path) -> None:
     preset_path = tmp_path / "presets.json"
     bus = _bus_with()
     state_bus = StateBus()
-    state_bus.update({"text": {"prompt": "molten cathedral"}})
+    state_bus.update({"palette": {"hue": 0.42}})
 
     client_a = TestClient(make_app(bus, state_bus=state_bus, preset_path=preset_path))
-    client_a.post("/api/presets/2/save", json={"label": "a"}).raise_for_status()
+    client_a.post("/api/presets/13/save", json={"label": "a"}).raise_for_status()
 
-    # Fresh app, same path.
     client_b = TestClient(make_app(_bus_with(), preset_path=preset_path))
     body = client_b.get("/api/presets").json()
-    assert body["presets"][2]["label"] == "a"
-    assert body["presets"][2]["state"]["text"]["prompt"] == "molten cathedral"
-
-
-# --------------------------------------------------------------------------- #
-# WebSocket carries state (Phase 5)
-# --------------------------------------------------------------------------- #
+    assert body["presets"][13]["label"] == "a"
+    assert body["presets"][13]["state"]["palette"]["hue"] == 0.42
 
 
 def test_websocket_payload_includes_state() -> None:
     bus = _bus_with(
-        FastFeatures(
-            rms=[0.05] * 14,
-            block_count=1,
-            n_channels=14,
-        )
+        FastFeatures(rms=[0.05] * 14, block_count=1, n_channels=14)
     )
     state_bus = StateBus()
-    state_bus.update({"text": {"prompt": "deep violet"}, "blend": {"audio_text": 0.7}})
+    state_bus.update({"palette": {"hue": 0.7}, "fx": {"kaleidoscope": 4}})
     client = TestClient(make_app(bus, state_bus=state_bus, broadcast_hz=120))
     with client.websocket_connect("/ws") as ws:
         msg = ws.receive_json()
         assert "state" in msg
-        assert msg["state"]["text"]["prompt"] == "deep violet"
-        assert msg["state"]["blend"]["audio_text"] == 0.7
-
-
-# --------------------------------------------------------------------------- #
-# AI tier (Phase 6)
-# --------------------------------------------------------------------------- #
-
-
-def test_health_reports_ai_inactive_by_default() -> None:
-    bus = _bus_with()
-    client = TestClient(make_app(bus))
-    body = client.get("/health").json()
-    assert body["ai_active"] is False
-    assert body["ai_gens"] == 0
-
-
-def test_health_reports_ai_active_when_bus_present() -> None:
-    import numpy as np
-
-    from apophenia.ai.bus import AIBus, AIFrame
-
-    bus = _bus_with()
-    ai_bus = AIBus()
-    ai_bus.publish(
-        AIFrame(image=np.zeros((4, 4, 3), dtype=np.uint8), gen_count=7, latency_ms=12.0)
-    )
-    client = TestClient(make_app(bus, ai_bus=ai_bus))
-    body = client.get("/health").json()
-    assert body["ai_active"] is True
-    assert body["ai_gens"] == 7
-
-
-def test_websocket_payload_includes_ai() -> None:
-    import numpy as np
-
-    from apophenia.ai.bus import AIBus, AIFrame
-
-    bus = _bus_with(
-        FastFeatures(rms=[0.05] * 14, block_count=1, n_channels=14)
-    )
-    ai_bus = AIBus()
-    ai_bus.publish(
-        AIFrame(
-            image=np.zeros((8, 8, 3), dtype=np.uint8),
-            prompt="test",
-            gen_count=3,
-            latency_ms=42.0,
-            seed=99,
-            model_name="stub",
-        )
-    )
-    client = TestClient(make_app(bus, ai_bus=ai_bus, broadcast_hz=120))
-    with client.websocket_connect("/ws") as ws:
-        msg = ws.receive_json()
-        assert "ai" in msg
-        assert msg["ai"]["gen_count"] == 3
-        assert msg["ai"]["prompt"] == "test"
-        assert msg["ai"]["latency_ms"] == 42.0
-        # Image bytes must NOT make it through — too big for the wire.
-        assert "image" not in msg["ai"]
-
-
-def test_websocket_payload_ai_null_when_disabled() -> None:
-    bus = _bus_with(
-        FastFeatures(rms=[0.05] * 14, block_count=1, n_channels=14)
-    )
-    client = TestClient(make_app(bus, broadcast_hz=120))
-    with client.websocket_connect("/ws") as ws:
-        msg = ws.receive_json()
-        assert "ai" in msg
-        assert msg["ai"] is None
+        assert msg["state"]["palette"]["hue"] == 0.7
+        assert msg["state"]["fx"]["kaleidoscope"] == 4

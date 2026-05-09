@@ -19,7 +19,6 @@ def test_deep_merge_replaces_scalars() -> None:
     base = {"a": 1, "b": 2}
     out = _deep_merge(base, {"a": 99})
     assert out == {"a": 99, "b": 2}
-    # Source unchanged
     assert base == {"a": 1, "b": 2}
 
 
@@ -52,29 +51,27 @@ def test_state_bus_starts_with_default_state() -> None:
     bus = StateBus()
     s = bus.get()
     assert isinstance(s, VisualState)
-    # Defaults from the schema.
-    assert s.blend.audio_text == 0.5
     assert s.transport.freeze is False
     assert s.channel_weight == [1.0] * 14
+    assert s.palette.saturation == 1.0
+    assert s.fx.kaleidoscope == 1
 
 
 def test_state_bus_get_returns_defensive_copy() -> None:
     """Mutating the returned state must not affect the bus."""
     bus = StateBus()
     s1 = bus.get()
-    s1.blend.audio_text = 0.9  # mutate copy
+    s1.palette.saturation = 1.7
     s2 = bus.get()
-    assert s2.blend.audio_text == 0.5
+    assert s2.palette.saturation == 1.0
 
 
-def test_state_bus_update_partial_blend() -> None:
+def test_state_bus_update_partial_palette() -> None:
     bus = StateBus()
-    new_state = bus.update({"blend": {"audio_text": 0.7}})
-    assert new_state.blend.audio_text == 0.7
-    # Other blend fields untouched.
-    assert new_state.blend.clap_clip == 0.5
-    # Other top-level fields untouched.
-    assert new_state.cfg == 5.0
+    new_state = bus.update({"palette": {"hue": 0.4}})
+    assert new_state.palette.hue == 0.4
+    assert new_state.palette.saturation == 1.0  # other field untouched
+    assert new_state.fx.kaleidoscope == 1
 
 
 def test_state_bus_update_channel_weight_full_array() -> None:
@@ -88,24 +85,24 @@ def test_state_bus_update_rejects_invalid_range() -> None:
     """Pydantic Field constraints catch out-of-range values."""
     bus = StateBus()
     with pytest.raises(ValidationError):
-        bus.update({"blend": {"audio_text": 1.5}})  # max is 1.0
+        bus.update({"palette": {"hue": 1.5}})
 
 
 def test_state_bus_update_rejects_wrong_channel_count() -> None:
     bus = StateBus()
     with pytest.raises((ValidationError, ValueError)):
-        bus.update({"channel_weight": [1.0, 1.0, 1.0]})  # not 14
+        bus.update({"channel_weight": [1.0, 1.0, 1.0]})
 
 
 def test_state_bus_replace_swaps_entire_state() -> None:
     bus = StateBus()
-    new = VisualState(cfg=8.0)
-    new.blend.audio_text = 0.1
+    new = VisualState()
+    new.palette.saturation = 1.8
+    new.fx.kaleidoscope = 6
     out = bus.replace(new)
-    assert out.cfg == 8.0
-    assert out.blend.audio_text == 0.1
-    # Subsequent get() reflects it.
-    assert bus.get().cfg == 8.0
+    assert out.palette.saturation == 1.8
+    assert out.fx.kaleidoscope == 6
+    assert bus.get().palette.saturation == 1.8
 
 
 def test_state_bus_thread_safety() -> None:
@@ -119,7 +116,7 @@ def test_state_bus_thread_safety() -> None:
             for i in range(200):
                 if stop.is_set():
                     return
-                bus.update({"blend": {field: (i % 100) / 100.0}})
+                bus.update({"palette": {field: (i % 100) / 100.0}})
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 
@@ -133,9 +130,8 @@ def test_state_bus_thread_safety() -> None:
             errors.append(e)
 
     ws = [
-        threading.Thread(target=writer, args=("audio_text",), daemon=True),
-        threading.Thread(target=writer, args=("clap_clip",), daemon=True),
-        threading.Thread(target=writer, args=("shader_ai",), daemon=True),
+        threading.Thread(target=writer, args=("hue",), daemon=True),
+        threading.Thread(target=writer, args=("saturation",), daemon=True),
     ]
     rs = [threading.Thread(target=reader, daemon=True) for _ in range(3)]
     for t in ws + rs:
@@ -146,16 +142,18 @@ def test_state_bus_thread_safety() -> None:
     assert not errors, f"thread errors: {errors}"
 
 
-def test_state_bus_update_text_prompt() -> None:
+def test_state_bus_update_fx() -> None:
     bus = StateBus()
-    new = bus.update({"text": {"prompt": "molten glass cathedral"}})
-    assert new.text.prompt == "molten glass cathedral"
+    new = bus.update({"fx": {"glitch": 0.4, "kaleidoscope": 6}})
+    assert new.fx.glitch == 0.4
+    assert new.fx.kaleidoscope == 6
+    assert new.fx.chromatic == 0.0
 
 
 def test_state_bus_update_nested_then_top_level() -> None:
     """Two consecutive partial updates compose correctly."""
     bus = StateBus()
-    bus.update({"blend": {"audio_text": 0.7}})
-    s = bus.update({"cfg": 8.0})
-    assert s.blend.audio_text == 0.7  # carried over
-    assert s.cfg == 8.0
+    bus.update({"palette": {"hue": 0.4}})
+    s = bus.update({"transport": {"freeze": True}})
+    assert s.palette.hue == 0.4  # carried over
+    assert s.transport.freeze is True

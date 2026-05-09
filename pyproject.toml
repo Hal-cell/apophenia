@@ -1,15 +1,15 @@
 [project]
 name = "apophenia"
-version = "1.0.0"
-description = "Multi-channel audio-reactive AV instrument with AI visual generation"
+version = "1.1.0"
+description = "Multi-channel audio-reactive AV instrument driven by GLSL shaders"
 authors = [{ name = "Hal Xu" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.12"
 
-# Base deps cover phases 0–2 (audio sources, fast features, OSC, control UI).
-# Visual + AI deps are extras so cold-install is fast and the dev loop on a
-# new machine doesn't have to download torch + diffusers up front.
+# Base deps cover audio capture, fast features, control UI, presets.
+# Visual + CLAP deps are extras so a remote / dev install doesn't have
+# to download torch up front.
 dependencies = [
     "numpy>=1.26",
     "sounddevice>=0.4.6",
@@ -28,12 +28,11 @@ visuals = [
     "moderngl-window>=2.4",
     "glfw>=2.6",  # explicit window backend; reliable on macOS / X11 / Wayland
 ]
-ai = [
+clap = [
+    # CLAP audio embedding (slow tier). Phase 10 dropped the SDXL image
+    # generator; torch + transformers are kept for CLAP only.
     "torch>=2.2",
-    "torchvision>=0.17",
-    "diffusers>=0.27",
     "transformers>=4.40",
-    "accelerate>=0.28",
     "safetensors>=0.4",
 ]
 dev = [
@@ -73,9 +72,5 @@ module = [
     "soundfile",
     "moderngl",
     "moderngl_window",
-    "diffusers",
-    "diffusers.*",
-    "accelerate",
-    "accelerate.*",
 ]
 ignore_missing_imports = true

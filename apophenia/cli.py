@@ -4,6 +4,8 @@ Subcommands:
     run         spin up the audio capture thread + uvicorn server + render window
     devices     list available Core Audio input devices
     smoke       run the source for a few seconds and print frame stats
+    version     print package + dep versions
+    config      print resolved paths
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ import logging
 import threading
 import time
 import webbrowser
-from typing import TYPE_CHECKING
 
 import numpy as np
 import typer
@@ -29,9 +30,6 @@ from apophenia.audio.features_slow import (
 from apophenia.audio.source import parse_source_arg
 from apophenia.control.server import make_app
 from apophenia.control.state_bus import StateBus
-
-if TYPE_CHECKING:
-    from apophenia.ai.bus import AIBus
 
 app = typer.Typer(
     name="apophenia",
@@ -65,30 +63,17 @@ def run(
     clap: bool = typer.Option(
         True,
         "--clap/--no-clap",
-        help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB. --no-clap skips it (no slow tier).",
-    ),
-    ai: bool = typer.Option(
-        False,
-        "--ai/--no-ai",
-        help="Run SDXL-Turbo image generation in the background. First call downloads ~5GB. Default off (heavy).",
-    ),
-    ai_resolution: int = typer.Option(
-        512, "--ai-resolution", help="SDXL-Turbo output side length in px (square)."
-    ),
-    ai_min_period_s: float = typer.Option(
-        0.0,
-        "--ai-min-period",
-        help="Floor on AI generation period in seconds. 0 = run as fast as the GPU allows.",
+        help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB. --no-clap skips it.",
     ),
 ) -> None:
     """Run audio capture + meter web UI + (optionally) the render window.
 
-    Phase 3 default: audio thread + uvicorn (web meter) + GLSL render
-    window all run together. Render window owns the main thread (Cocoa
-    requires GUI on main); audio + uvicorn live in daemon threads.
+    Audio thread + uvicorn (web meter) + GLSL render window all run
+    together. Render window owns the main thread (Cocoa requires GUI on
+    main); audio + uvicorn live in daemon threads.
 
-    `--no-render` keeps the phase-1 behaviour: server runs on the main
-    thread, no render window. Useful for headless dev or remote sessions.
+    `--no-render` falls back to the headless path: server runs on the
+    main thread, no render window. Useful for remote / dev sessions.
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -126,54 +111,16 @@ def run(
     )
     audio_thread.start()
 
-    # AI tier (SDXL-Turbo). Optional via --ai; default off because the
-    # model is huge (~5GB) and busy users without an MPS / CUDA device
-    # don't want to spin up a CPU diffusion job by accident.
-    ai_bus: AIBus | None = None
-    ai_thread: threading.Thread | None = None
-    if ai:
-        # Lazy import keeps non-AI installs from paying the import tax.
-        from apophenia.ai.bus import AIBus
-        from apophenia.ai.loop import ai_loop
-        from apophenia.ai.sdxl_turbo import SDXLTurboGenerator
-
-        ai_bus = AIBus()
-        generator = SDXLTurboGenerator(resolution=ai_resolution)
-        # Loading SDXL is slow; do it on the AI thread so the CLI banner
-        # appears promptly. Renders fall back to the shader path until
-        # the first AI frame lands.
-        def _ai_worker() -> None:
-            try:
-                generator.load()
-            except Exception:  # noqa: BLE001
-                logging.getLogger(__name__).exception(
-                    "SDXL load failed; AI tier disabled for this session"
-                )
-                return
-            assert ai_bus is not None  # narrowed by the `if ai:` block above
-            ai_loop(
-                state_bus,
-                ai_bus,
-                stop_event,
-                generator,
-                slow_bus=slow_bus,
-                min_period_s=ai_min_period_s,
-            )
-
-        ai_thread = threading.Thread(target=_ai_worker, name="ai", daemon=True)
-        ai_thread.start()
-
     web_app = make_app(
         bus,
         slow_bus=slow_bus,
         state_bus=state_bus,
         broadcast_hz=broadcast_hz,
-        ai_bus=ai_bus,
     )
     url = f"http://127.0.0.1:{port}"
 
     console.print()
-    console.print("[bold green]apophenia v1.0 · running[/bold green]")
+    console.print("[bold green]apophenia · running[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
@@ -181,10 +128,6 @@ def run(
     console.print(f"  meter:   [cyan]{url}[/cyan]")
     console.print(f"  render:  {'[green]on[/green] (GLSL window)' if render else '[yellow]off[/yellow]'}")
     console.print(f"  clap:    {'[green]on[/green] (~1Hz)' if clap else '[yellow]off[/yellow]'}")
-    console.print(
-        f"  ai:      "
-        f"{'[green]on[/green] (SDXL-Turbo)' if ai else '[yellow]off[/yellow]'}"
-    )
     console.print("  ws hz:   30")
     console.print("  ctrl-c (terminal) or close window to stop")
     console.print()
@@ -193,7 +136,7 @@ def run(
         threading.Timer(0.25, lambda: webbrowser.open(url)).start()
 
     if not render:
-        # Phase-1 path: uvicorn on main thread, audio in background.
+        # Headless path: uvicorn on main thread, audio in background.
         try:
             uvicorn.run(web_app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
         finally:
@@ -201,12 +144,9 @@ def run(
             audio_thread.join(timeout=1.0)
             if slow_thread is not None:
                 slow_thread.join(timeout=2.0)
-            if ai_thread is not None:
-                ai_thread.join(timeout=2.0)
         return
 
-    # --- render-on path (phase-3 default) ---
-    # Run uvicorn in a daemon thread so the main thread can host the GL window.
+    # --- render-on path (default) ---
     config = uvicorn.Config(
         web_app,
         host="127.0.0.1",
@@ -224,13 +164,8 @@ def run(
 
     server_thread = threading.Thread(target=_serve, name="uvicorn", daemon=True)
     server_thread.start()
-
-    # Wait briefly for uvicorn to bind so the meter is responsive when
-    # the user alt-tabs to the browser. 0.25s is plenty on macOS.
     time.sleep(0.25)
 
-    # Import lazily — only the [visuals] extra ships moderngl-window /
-    # glfw, so headless installs don't pay the import cost on `--no-render`.
     try:
         import moderngl_window as mglw
 
@@ -246,7 +181,6 @@ def run(
 
     ApopheniaWindow.bus = bus
     ApopheniaWindow.state_bus = state_bus
-    ApopheniaWindow.ai_bus = ai_bus
 
     # Bug workaround: moderngl_window's parse_args does
     # `args or sys.argv[1:]` (line 384, mglw 3.1.1), and an empty list
@@ -268,19 +202,12 @@ def run(
         audio_thread.join(timeout=1.0)
         if slow_thread is not None:
             slow_thread.join(timeout=2.0)
-        if ai_thread is not None:
-            ai_thread.join(timeout=2.0)
         server_thread.join(timeout=2.0)
 
 
 @app.command()
 def devices() -> None:
-    """List Core Audio input devices visible to the system.
-
-    Devices we recognise as common multi-channel routes for apophenia
-    (ES-9, BlackHole, Pro Tools Audio Bridge, Loopback) get a ★ marker.
-    Pick any of them with `--source device:"<exact name>"`.
-    """
+    """List Core Audio input devices visible to the system."""
     from apophenia.audio.device import list_devices
 
     devs = list_devices()
@@ -371,16 +298,13 @@ def version() -> None:
     console.print(f"  pydantic:    {_pkg('pydantic')}")
     console.print(f"  sounddevice: {_pkg('sounddevice')}")
     console.print(f"  moderngl:    {_pkg('moderngl')}    (visuals extra)")
-    console.print(f"  torch:       {_pkg('torch')}    (ai extra)")
-    console.print(f"  diffusers:   {_pkg('diffusers')}    (ai extra)")
-    console.print(f"  transformers:{_pkg('transformers')}    (ai extra)")
+    console.print(f"  torch:       {_pkg('torch')}    (clap extra)")
+    console.print(f"  transformers:{_pkg('transformers')}    (clap extra)")
 
 
 @app.command()
 def config() -> None:
-    """Print the resolved paths apophenia uses (preset bank, default audio
-    device, etc.). Useful for debugging where state actually lives.
-    """
+    """Print the resolved paths apophenia uses."""
     from apophenia.control.presets import default_path
 
     preset_path = default_path()
@@ -391,7 +315,6 @@ def config() -> None:
         f"               [dim]({'exists' if preset_path.exists() else 'will be created on first run'})[/dim]"
     )
 
-    # Default audio device — only meaningful when sounddevice is importable.
     console.print()
     console.print("[bold]default audio source:[/bold]")
     try:

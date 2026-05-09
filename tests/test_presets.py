@@ -40,11 +40,9 @@ def test_preset_bank_pads_short_input() -> None:
     """If someone hands us a 3-slot list, normalise to 16."""
     bank = PresetBank(presets=[Preset(label="a"), Preset(label="b"), Preset(label="c")])
     assert len(bank.presets) == PRESET_BANK_SIZE
-    # First three slots preserved.
     assert bank.presets[0].label == "a"
     assert bank.presets[1].label == "b"
     assert bank.presets[2].label == "c"
-    # Rest are empty.
     for p in bank.presets[3:]:
         assert p.label == ""
         assert p.state is None
@@ -64,13 +62,12 @@ def test_preset_bank_truncates_long_input() -> None:
 def test_save_slot_writes_state_into_chosen_index() -> None:
     bank = PresetBank()
     state = VisualState()
-    state.blend.audio_text = 0.7
+    state.palette.hue = 0.7
 
-    new_bank = save_slot(bank, 3, state, label="cathedral")
-    assert new_bank.presets[3].label == "cathedral"
+    new_bank = save_slot(bank, 3, state, label="warm-violet")
+    assert new_bank.presets[3].label == "warm-violet"
     assert new_bank.presets[3].state is not None
-    assert new_bank.presets[3].state.blend.audio_text == 0.7
-    # Other slots untouched.
+    assert new_bank.presets[3].state.palette.hue == 0.7
     for i, p in enumerate(new_bank.presets):
         if i != 3:
             assert p.state is None
@@ -116,8 +113,7 @@ def test_clear_slot_rejects_out_of_range() -> None:
 def test_load_returns_empty_bank_when_file_missing_use_starter_false(
     tmp_path: Path,
 ) -> None:
-    """`use_starter=False` keeps the original empty-on-missing semantics
-    that earlier tests / scripts may depend on."""
+    """`use_starter=False` keeps the original empty-on-missing semantics."""
     p = tmp_path / "none.json"
     bank = load(p, use_starter=False)
     assert isinstance(bank, PresetBank)
@@ -128,19 +124,19 @@ def test_save_then_load_roundtrip(tmp_path: Path) -> None:
     p = tmp_path / "presets.json"
     bank = PresetBank()
     state = VisualState()
-    state.text.prompt = "deep violet ribbons"
-    state.blend.audio_text = 0.65
-    bank = save_slot(bank, 0, state, label="cathedral")
+    state.palette.hue = 0.42
+    state.fx.kaleidoscope = 6
+    bank = save_slot(bank, 0, state, label="warm-hex")
     bank = save_slot(bank, 12, VisualState(), label="empty-but-saved")
     save(bank, p)
     assert p.exists()
 
     loaded = load(p)
     assert loaded.version == PRESET_FORMAT_VERSION
-    assert loaded.presets[0].label == "cathedral"
+    assert loaded.presets[0].label == "warm-hex"
     assert loaded.presets[0].state is not None
-    assert loaded.presets[0].state.text.prompt == "deep violet ribbons"
-    assert loaded.presets[0].state.blend.audio_text == 0.65
+    assert loaded.presets[0].state.palette.hue == 0.42
+    assert loaded.presets[0].state.fx.kaleidoscope == 6
     assert loaded.presets[12].label == "empty-but-saved"
 
 
@@ -170,7 +166,7 @@ def test_load_old_version_returns_empty_bank(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Starter bank (Phase 8)
+# Starter bank (Phase 8/10)
 # --------------------------------------------------------------------------- #
 
 
@@ -180,17 +176,12 @@ def test_load_materialises_starter_bank_on_missing_file(tmp_path: Path) -> None:
     p = tmp_path / "presets.json"
     assert not p.exists()
     bank = load(p)
-    # 12 starters + 4 empty (PRESET_BANK_SIZE = 16).
     full = [pr for pr in bank.presets if pr.state is not None]
     empty = [pr for pr in bank.presets if pr.state is None]
     assert len(full) == 12
     assert len(empty) == 4
-    # Every full slot has a non-empty label.
     assert all(pr.label.strip() for pr in full)
-    # Side effect: file persisted to disk.
     assert p.exists()
-    # Re-loading reads the same labels back from disk (proving the
-    # serialised JSON round-trips cleanly).
     bank2 = load(p)
     assert [pr.label for pr in bank2.presets] == [pr.label for pr in bank.presets]
 
@@ -203,29 +194,26 @@ def test_load_does_not_override_existing_user_file(tmp_path: Path) -> None:
 
     loaded = load(p)
     assert loaded.presets[0].label == "my-thing"
-    # Slot 1 in the starter bank would be "paper"; the user's file has
+    # Slot 1 in the starter bank would be "cool"; the user's file has
     # this slot empty, so the starter MUST NOT have leaked in.
     assert loaded.presets[1].state is None
 
 
 def test_load_starter_includes_known_presets(tmp_path: Path) -> None:
-    """Spot-check a couple of starter labels so we'll notice if the bank
-    silently goes empty (e.g., import order regression)."""
+    """Spot-check current starter labels."""
     p = tmp_path / "presets.json"
     bank = load(p)
     labels = {pr.label for pr in bank.presets if pr.state is not None}
-    assert "bloom" in labels
-    assert "cathedral" in labels
-    assert "neon_city" in labels
+    assert "warm" in labels
+    assert "hex" in labels
+    assert "rupture" in labels
 
 
 def test_starter_bank_validates_against_schema() -> None:
-    """If a starter ever drifts out of the VisualState schema (e.g., a
-    field gets tightened), this test fires before the bank ships."""
+    """If a starter ever drifts out of the VisualState schema, this fires
+    before the bank ships."""
     from apophenia.control.starter_presets import starter_presets_dict
 
-    # starter_presets_dict() raises Pydantic ValidationError on schema
-    # drift; just calling it is the test.
     bank_dict = starter_presets_dict()
     assert bank_dict["version"] == PRESET_FORMAT_VERSION
     assert len(bank_dict["presets"]) == PRESET_BANK_SIZE

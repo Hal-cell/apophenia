@@ -1,207 +1,73 @@
 """Curated 12-preset starter bank shipped with the package.
 
-This is the V1 first-run experience: when a user installs apophenia and
-there's no `~/.config/apophenia/presets.json` yet, `presets.load()`
-materialises this bank to disk so the preset grid in the UI is alive
-on first launch instead of empty.
+Phase 10 rewrite: each preset is a snapshot of the slim post-AI-strip
+`VisualState` — palette + post-FX + channel-weight distribution + mood.
+No text prompts, no AI blend params; everything here directly steers
+the GLSL shader engine and Compositor.
 
-The first 12 slots cover a deliberate spread:
-  * 1–4   minimal / quiet → busy / loud (level along the "energy" axis)
-  * 5–8   organic / natural → digital / synthetic (along "synthetic-ness")
-  * 9–12  experimental territories that show off post-FX
-Slots 13–16 ship empty so the user has space for their own without
-having to first delete an existing one.
+The 12 starters are laid out as 4 axes × 3 presets each across slots 1-12:
 
-Each slot is a complete `VisualState` snapshot — prompt + every slider /
-knob / FX / channel weight — captured with the schema's defaults filled
-in. To tweak the bank, edit `STARTER_DATA` below and the change ships
-in the next install. Existing users keep their saved-over slots.
+  Slots 1–3   → tonal palette (warm / cool / neutral)
+  Slots 4–6   → energy distribution across 14 channels
+  Slots 7–9   → kaleidoscope geometry (3-fold / 6-fold / 9-fold)
+  Slots 10–12 → post-FX intensity (subtle / lens / rupture)
+
+Slots 13–16 ship empty so the user has space to save their own
+without first deleting an existing one.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# Each entry is (label, partial state dict). The partial is deep-merged
-# onto VisualState defaults at materialisation time, so any field omitted
-# inherits its default from the schema.
 STARTER_DATA: list[tuple[str, dict[str, Any]]] = [
-    # ---- 1–4: energy axis (minimal → loud) ---- #
-    (
-        "bloom",
-        {
-            "text": {"prompt": "soft lavender clouds at dawn, bokeh light, dreamy haze"},
-            "blend": {"audio_text": 0.45, "shader_ai": 0.55},
-            "cfg": 4.0,
-            "palette": {"hue": 0.05, "saturation": 0.85},
-        },
-    ),
-    (
-        "paper",
-        {
-            "text": {
-                "prompt": (
-                    "torn paper textures, watercolor stains, "
-                    "delicate ink wash, asian calligraphy"
-                ),
-            },
-            "blend": {"audio_text": 0.6, "shader_ai": 0.3},  # shader-heavy
-            "cfg": 4.5,
-            "palette": {"saturation": 0.7},
-        },
-    ),
-    (
-        "liquid_metal",
-        {
-            "text": {
-                "prompt": (
-                    "molten chrome surface, slow ripples, reflective, "
-                    "studio lighting, hyperreal"
-                ),
-            },
-            "blend": {"audio_text": 0.55, "shader_ai": 0.65},
-            "cfg": 5.0,
-            "palette": {"saturation": 1.1},
-            "fx": {"chromatic": 0.1},
-        },
-    ),
-    (
-        "cathedral",
-        {
-            "text": {
-                "prompt": (
-                    "molten glass cathedral, deep violet, ribbons of fire, "
-                    "ornate baroque, 35mm film grain"
-                ),
-            },
-            "blend": {"audio_text": 0.7, "shader_ai": 0.6},
-            "cfg": 6.0,
-            "palette": {"hue": 0.7, "saturation": 1.2},
-            "fx": {"glitch": 0.05},
-        },
-    ),
-    # ---- 5–8: organic → synthetic ---- #
-    (
-        "forest",
-        {
-            "text": {
-                "prompt": (
-                    "ancient redwood forest in mist, shafts of light through leaves, "
-                    "moss, cinematic"
-                ),
-            },
-            "blend": {"audio_text": 0.5, "shader_ai": 0.55},
-            "cfg": 5.0,
-            "palette": {"hue": 0.3, "saturation": 1.0},
-            "fx": {"chromatic": 0.05},
-        },
-    ),
-    (
-        "coral",
-        {
-            "text": {
-                "prompt": (
-                    "underwater coral reef, schools of fish, soft caustics, "
-                    "bioluminescent"
-                ),
-            },
-            "blend": {"audio_text": 0.55, "shader_ai": 0.5},
-            "cfg": 5.5,
-            "palette": {"hue": 0.55, "saturation": 1.15},
-            "fx": {"chromatic": 0.15},
-        },
-    ),
-    (
-        "circuit",
-        {
-            "text": {
-                "prompt": (
-                    "circuit board macro, gold traces, intricate geometric pattern, "
-                    "high contrast"
-                ),
-            },
-            "blend": {"audio_text": 0.65, "shader_ai": 0.7},
-            "cfg": 5.5,
-            "palette": {"hue": 0.13, "saturation": 1.3},
-            "fx": {"glitch": 0.08},
-        },
-    ),
-    (
-        "neon_city",
-        {
-            "text": {
-                "prompt": (
-                    "cyberpunk city at night, rain, neon reflections on wet asphalt, "
-                    "anamorphic flares"
-                ),
-            },
-            "blend": {"audio_text": 0.7, "shader_ai": 0.75},
-            "cfg": 6.5,
-            "palette": {"hue": 0.85, "saturation": 1.4},
-            "fx": {"glitch": 0.15, "chromatic": 0.25},
-        },
-    ),
-    # ---- 9–12: post-FX territory ---- #
-    (
-        "cosmic",
-        {
-            "text": {
-                "prompt": (
-                    "spiral galaxy core, nebulae, deep space, billions of stars, "
-                    "cinematic, hubble"
-                ),
-            },
-            "blend": {"audio_text": 0.5, "shader_ai": 0.55},
-            "cfg": 5.0,
-            "palette": {"hue": 0.7, "saturation": 1.2},
-            "fx": {"kaleidoscope": 6, "chromatic": 0.1},
-        },
-    ),
-    (
-        "fire",
-        {
-            "text": {
-                "prompt": (
-                    "raging bonfire, dancing embers, dark background, "
-                    "long exposure, abstract"
-                ),
-            },
-            "blend": {"audio_text": 0.6, "shader_ai": 0.6},
-            "cfg": 5.0,
-            "palette": {"hue": 0.05, "saturation": 1.5},
-            "fx": {"glitch": 0.1, "chromatic": 0.15},
-        },
-    ),
-    (
-        "kaleido",
-        {
-            "text": {
-                "prompt": (
-                    "ornate persian rug pattern, jewel tones, kaleidoscopic, "
-                    "gold thread, intricate"
-                ),
-            },
-            "blend": {"audio_text": 0.55, "shader_ai": 0.6},
-            "cfg": 5.0,
-            "palette": {"saturation": 1.3},
-            "fx": {"kaleidoscope": 8},
-        },
-    ),
-    (
-        "glitch",
-        {
-            "text": {
-                "prompt": (
-                    "vhs glitch art, signal corruption, scan lines, "
-                    "magnetic distortion, broken tv"
-                ),
-            },
-            "blend": {"audio_text": 0.65, "shader_ai": 0.7},
-            "cfg": 5.5,
-            "palette": {"saturation": 1.25},
-            "fx": {"glitch": 0.5, "chromatic": 0.4},
-        },
-    ),
+    # ---- 1–3: tonal palette ---- #
+    ("warm",    {"palette": {"hue": 0.05, "saturation": 1.1}}),
+    ("cool",    {"palette": {"hue": 0.55, "saturation": 0.95}}),
+    ("neutral", {"palette": {"hue": 0.0,  "saturation": 0.7}}),
+    # ---- 4–6: energy distribution ---- #
+    ("front_heavy", {
+        # ch1-4 full, ch5-14 fades — feature percussive / lead channels.
+        "channel_weight": [
+            1.0, 1.0, 1.0, 1.0,
+            0.7, 0.6, 0.5, 0.4,
+            0.3, 0.3, 0.2, 0.2,
+            0.1, 0.1,
+        ],
+    }),
+    ("back_heavy", {
+        # ch1-4 quiet, ch9-14 dominant — feature pads / drones / FX.
+        "channel_weight": [
+            0.2, 0.3, 0.3, 0.4,
+            0.5, 0.6, 0.7, 0.8,
+            1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0,
+        ],
+    }),
+    ("spread", {
+        # alternating low / high so adjacent layers never both fire —
+        # gives a wider visual texture instead of clumped intensity.
+        "channel_weight": [
+            1.0, 0.4, 1.0, 0.4,
+            1.0, 0.4, 1.0, 0.4,
+            1.0, 0.4, 1.0, 0.4,
+            1.0, 0.4,
+        ],
+    }),
+    # ---- 7–9: kaleidoscope geometry ---- #
+    ("tri",   {"fx": {"kaleidoscope": 3}, "palette": {"saturation": 1.1}}),
+    ("hex",   {"fx": {"kaleidoscope": 6}, "palette": {"saturation": 1.15}}),
+    ("ennea", {"fx": {"kaleidoscope": 9}, "palette": {"saturation": 1.25}}),
+    # ---- 10–12: post-FX intensity ---- #
+    ("subtle", {"fx": {"glitch": 0.05, "chromatic": 0.1}}),
+    ("lens",   {
+        "fx": {"glitch": 0.0, "chromatic": 0.6},
+        "palette": {"saturation": 1.2},
+    }),
+    ("rupture", {
+        "fx": {"glitch": 0.7, "chromatic": 0.4, "kaleidoscope": 4},
+        "palette": {"saturation": 1.3},
+    }),
 ]
 
 
@@ -221,13 +87,10 @@ def starter_presets_dict() -> dict[str, Any]:
     presets: list[dict[str, Any]] = []
     for label, partial in STARTER_DATA:
         # Validate-then-dump round-trip to fill in defaults from the schema.
-        # If a starter ever drifts out of the schema (e.g., a field gets
-        # tightened) Pydantic will raise here at import time; better that
-        # than silently shipping a broken starter.
+        # Schema drift fails loudly here at import time rather than silently
+        # shipping a broken starter.
         state = VisualState.model_validate(partial)
         presets.append({"label": label, "state": state.model_dump()})
-    # Pad the remaining slots with empties so the user has space for
-    # their own saves.
     while len(presets) < PRESET_BANK_SIZE:
         presets.append({"label": "", "state": None})
     return {"version": PRESET_FORMAT_VERSION, "presets": presets}
