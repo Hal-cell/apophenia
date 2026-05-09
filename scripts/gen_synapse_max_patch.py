@@ -148,11 +148,16 @@ add_line("route-cat", 9, "status-block", 0)
 
 
 # --- Channel sub-routers ----------------------------------------------------
-# For every category we have channel-N suffix routing /1 .. /14.
+# For every category we have channel-N suffix routing 1..14.
 # route-cat outlet order: cv(0) cv_rate(1) gate(2) gate_event(3) rms(4) peak(5)
 #                         centroid(6) onset(7) spectrum(8) block(9) clap(10)
-
-CH_ROUTE_TEXT = "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14"
+#
+# Note: integer channel numbers WITHOUT leading slashes. Max's [route]
+# consumes the leading slash when it matches an OSC-style arg, so after
+# [route /synapse] → [route cv ...], the remaining message carries the
+# channel number as a bare int (e.g. `3 0.42` for /synapse/cv/3), not
+# `/3 0.42`. `route /1 /2 ... /14` would never match.
+CH_ROUTE_TEXT = "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14"
 
 def add_channel_router(rid: str, x: float, y: float, src_id: str, src_outlet: int):
     add(box(

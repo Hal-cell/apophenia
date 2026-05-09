@@ -238,7 +238,7 @@
 				"box": {
 					"id": "rt-rms",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						220,
@@ -270,7 +270,7 @@
 				"box": {
 					"id": "rt-centroid",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						250,
@@ -302,7 +302,7 @@
 				"box": {
 					"id": "rt-onset",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						280,
@@ -334,7 +334,7 @@
 				"box": {
 					"id": "rt-cv",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						310,
@@ -366,7 +366,7 @@
 				"box": {
 					"id": "rt-cv-rate",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						340,
@@ -398,7 +398,7 @@
 				"box": {
 					"id": "rt-gate",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						370,
@@ -430,7 +430,7 @@
 				"box": {
 					"id": "rt-gate-event",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						400,
@@ -462,7 +462,7 @@
 				"box": {
 					"id": "rt-spectrum",
 					"maxclass": "newobj",
-					"text": "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+					"text": "route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
 					"patching_rect": [
 						30,
 						430,
