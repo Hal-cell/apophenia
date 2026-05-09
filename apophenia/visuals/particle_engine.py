@@ -85,10 +85,9 @@ def look_at_matrix(eye: tuple[float, float, float],
 
 
 def camera_eye(distance: float, elevation_deg: float, azimuth_rad: float) -> tuple[float, float, float]:
-    """Spherical → Cartesian. Camera orbits around the origin (the
-    caller can offset to orbit around a moving target by adding the
-    target after this call). `azimuth_rad` is the angle in the XZ
-    plane (around Y); 0 looks down the +Z axis."""
+    """Spherical → Cartesian. Camera orbits around (0, 0, 0).
+    `azimuth_rad` is the angle in the XZ plane (around Y); 0 looks
+    down the +Z axis."""
     elev = math.radians(elevation_deg)
     return (
         distance * math.cos(elev) * math.sin(azimuth_rad),
@@ -97,41 +96,107 @@ def camera_eye(distance: float, elevation_deg: float, azimuth_rad: float) -> tup
     )
 
 
-# 14 emitter positions on the ring — must match `emitter_pos()` in
-# particle_update.vert. Computed once at module load so every frame's
-# centroid math doesn't redo the trig.
-def _emitter_ring(n_channels: int = 14, radius: float = 1.6) -> np.ndarray:
-    angles = np.arange(n_channels, dtype=np.float32) / n_channels * (2 * np.pi)
-    return np.stack([
-        np.cos(angles) * radius,
-        np.sin(np.arange(n_channels, dtype=np.float32) * 0.91) * 0.25,
-        np.sin(angles) * radius,
-    ], axis=1)
+# --------------------------------------------------------------------------- #
+# Emitter pattern math (phase 17)
+# --------------------------------------------------------------------------- #
 
 
-_EMITTER_RING = _emitter_ring()
+# Number of emitters — must match `N_CHANNELS` in the shader.
+N_EMITTERS = 14
 
 
-def camera_drift_offset(time_s: float, drift_amount: float, audio_intensity: float) -> np.ndarray:
-    """Phase-17: organic Lissajous + audio-modulated camera-position
-    drift. Returned as a (3,) float32 offset to add to the orbit eye.
+def _ring_positions(radius: float) -> np.ndarray:
+    """The original phase-12 ring: 14 emitters evenly spaced in the
+    XZ plane at the given radius, with slight Y wobble per channel."""
+    angles = np.arange(N_EMITTERS, dtype=np.float32) / N_EMITTERS * (2 * np.pi)
+    pos = np.zeros((N_EMITTERS, 3), dtype=np.float32)
+    pos[:, 0] = np.cos(angles) * radius
+    pos[:, 1] = np.sin(np.arange(N_EMITTERS, dtype=np.float32) * 0.91) * 0.25
+    pos[:, 2] = np.sin(angles) * radius
+    return pos
 
-    Three independent trig oscillators keep X/Y/Z motion uncorrelated;
-    the audio-pulse term gives a subtle radial breathing in time with
-    loud sections without being directional.
+
+def _grid_positions(radius: float) -> np.ndarray:
+    """7-column × 2-row grid laid horizontally. Whole grid is `radius`
+    wide overall."""
+    pos = np.zeros((N_EMITTERS, 3), dtype=np.float32)
+    for i in range(N_EMITTERS):
+        row = i // 7         # 0 or 1
+        col = i % 7          # 0..6
+        # X spans [-radius, +radius]; Z stays compact.
+        pos[i, 0] = (col - 3.0) / 3.0 * radius
+        pos[i, 1] = 0.0
+        pos[i, 2] = (row - 0.5) * radius * 0.6
+    return pos
+
+
+def _line_positions(radius: float) -> np.ndarray:
+    """Single horizontal line along X axis, evenly spaced."""
+    pos = np.zeros((N_EMITTERS, 3), dtype=np.float32)
+    pos[:, 0] = (np.arange(N_EMITTERS, dtype=np.float32) - 6.5) / 6.5 * radius
+    return pos
+
+
+def _sphere_positions(radius: float) -> np.ndarray:
+    """Fibonacci-spiral distribution on a sphere of given radius —
+    14 points roughly evenly spread in 3D."""
+    pos = np.zeros((N_EMITTERS, 3), dtype=np.float32)
+    golden = (1.0 + 5 ** 0.5) / 2.0
+    for i in range(N_EMITTERS):
+        # Fibonacci: y goes from +1 → -1, theta wraps via golden ratio.
+        y = 1.0 - 2.0 * (i + 0.5) / N_EMITTERS
+        r_xy = (1.0 - y * y) ** 0.5
+        theta = 2 * np.pi * i / golden
+        pos[i, 0] = math.cos(theta) * r_xy * radius
+        pos[i, 1] = y * radius
+        pos[i, 2] = math.sin(theta) * r_xy * radius
+    return pos
+
+
+def _lissajous_positions(radius: float) -> np.ndarray:
+    """3D Lissajous curve: 14 emitters sampled evenly along the curve
+    `(sin(3t), sin(2t)*0.5, cos(5t))` parameterised in t ∈ [0, 2π]."""
+    pos = np.zeros((N_EMITTERS, 3), dtype=np.float32)
+    t = np.linspace(0.0, 2 * np.pi, N_EMITTERS, endpoint=False).astype(np.float32)
+    pos[:, 0] = np.sin(3 * t) * radius
+    pos[:, 1] = np.sin(2 * t) * radius * 0.4
+    pos[:, 2] = np.cos(5 * t) * radius
+    return pos
+
+
+_PATTERN_BUILDERS = {
+    "ring":      _ring_positions,
+    "grid":      _grid_positions,
+    "line":      _line_positions,
+    "sphere":    _sphere_positions,
+    "lissajous": _lissajous_positions,
+}
+
+
+def compute_emitter_positions(
+    pattern: str,
+    radius: float,
+    motion_amp: float,
+    motion_speed: float,
+    time_s: float,
+) -> np.ndarray:
+    """Compute the live (14, 3) emitter positions for the given state
+    + time. Returns float32. Each emitter orbits its base position on
+    a per-channel Lissajous curve, scaled by `motion_amp`.
     """
-    if drift_amount <= 0.0:
-        return np.zeros(3, dtype=np.float32)
-    # Base Lissajous, irregular periods so motion never repeats.
-    lissa = np.array([
-        math.sin(time_s * 0.13) + math.cos(time_s * 0.07) * 0.6,
-        math.sin(time_s * 0.09) * 0.4 + math.cos(time_s * 0.21) * 0.2,
-        math.cos(time_s * 0.11) - math.sin(time_s * 0.05) * 0.6,
-    ], dtype=np.float32)
-    # Audio pulse — a small directional pump that breathes with the mix.
-    pulse = math.sin(time_s * 1.7) * audio_intensity * 0.4
-    return (lissa + np.array([pulse, pulse * 0.3, -pulse * 0.7], dtype=np.float32)) \
-           * drift_amount * 0.5
+    builder = _PATTERN_BUILDERS.get(pattern, _ring_positions)
+    base = builder(radius)
+    if motion_amp > 1e-6:
+        t = time_s * motion_speed
+        ch = np.arange(N_EMITTERS, dtype=np.float32)
+        drift = np.zeros((N_EMITTERS, 3), dtype=np.float32)
+        # Per-channel phase + frequency offsets so emitters don't all
+        # orbit in lockstep.
+        drift[:, 0] = np.sin(t + ch * 0.7) * motion_amp * 0.30
+        drift[:, 1] = np.cos(t * 0.8 + ch * 1.3) * motion_amp * 0.15
+        drift[:, 2] = np.sin(t * 1.1 + ch * 1.9) * motion_amp * 0.30
+        return base + drift
+    return base
 
 
 # --------------------------------------------------------------------------- #
@@ -206,26 +271,6 @@ class ParticleEngine:
             )
             for buf in self._buffers
         ]
-
-        # Phase-17: smoothed audio-weighted centroid the camera tracks.
-        self._smoothed_centroid = np.zeros(3, dtype=np.float32)
-        self._centroid_alpha = 0.04
-
-        # Phase-18: smoothed per-channel audio inputs. Raw audio
-        # fluctuates frame-to-frame at the WS broadcast rate, which
-        # turned the simulation jittery — every frame a slightly
-        # different force. EMA-smoothing the per-channel arrays
-        # (~0.15s time constant at 60fps) gives the simulation a
-        # stable force field that evolves smoothly with the music.
-        self._smoothed_rms = np.zeros(14, dtype=np.float32)
-        self._smoothed_onset = np.zeros(14, dtype=np.float32)
-        self._smoothed_centroid_ch = np.zeros(14, dtype=np.float32)
-        # Two different EMAs: rms/centroid use a smoother track (slower
-        # changes are more meaningful for them); onset envelopes are
-        # already geometric-decay outputs from the audio loop, so we
-        # smooth them less to keep their transient shape.
-        self._rms_alpha = 0.10
-        self._onset_alpha = 0.30
 
     # ------------------------------------------------------------------ #
     # Init
@@ -304,41 +349,36 @@ class ParticleEngine:
             return
 
         # ---- Pull audio uniforms (14 floats per array) ---- #
-        # Phase-18: EMA-smooth the per-channel arrays so the simulation
-        # doesn't see frame-to-frame audio jitter as force jitter.
-        # Raw values are used for the AUDIO-WEIGHTED CENTROID (camera
-        # tracking already has its own EMA, and using raw here keeps the
-        # camera responsive); smoothed values feed the SHADER UNIFORMS.
-        raw_rms = self._channel_array(features.rms if features else None)
-        raw_onset = self._channel_array(features.onset_envelope if features else None)
-        raw_centroid = self._channel_array(features.centroid if features else None)
-
-        self._smoothed_rms += (raw_rms - self._smoothed_rms) * self._rms_alpha
-        self._smoothed_onset += (raw_onset - self._smoothed_onset) * self._onset_alpha
-        self._smoothed_centroid_ch += (
-            raw_centroid - self._smoothed_centroid_ch
-        ) * self._rms_alpha
-
-        rms = self._smoothed_rms
-        onset = self._smoothed_onset
-        centroid = self._smoothed_centroid_ch
-
+        rms = self._channel_array(features.rms if features else None)
+        onset = self._channel_array(features.onset_envelope if features else None)
+        centroid = self._channel_array(features.centroid if features else None)
         weight = np.array(state.channel_weight, dtype=np.float32)
         if weight.size != 14:
             weight = np.ones(14, dtype=np.float32)
 
-        # Phase-13 audio energy scalars: based on smoothed values so the
-        # flow-field strength evolves smoothly with the music rather
-        # than per-frame.
+        # Phase-13 audio energy scalars: a single "loudness" number for
+        # flow-field strength, plus the CLAP embedding norm for slow
+        # timbre tracking. Multiplied by per-channel weight so a muted
+        # channel can't push the overall energy up.
         weighted_rms = rms * weight
         audio_intensity = float(np.clip(weighted_rms.mean() * 1.4, 0.0, 1.0))
-        # `onset_avg` for camera elevation kick uses RAW onsets so
-        # transient camera shake stays sharp (smoothing it would defeat
-        # the point).
-        weighted_onset_raw = raw_onset * weight
-        onset_avg = float(np.clip(weighted_onset_raw.mean(), 0.0, 1.0))
+        weighted_onset = onset * weight
+        onset_avg = float(np.clip(weighted_onset.mean(), 0.0, 1.0))
         audio_norm = float(slow.embedding_norm) if slow is not None else 0.0
+        # CLAP norms are typically ~1 (the model L2-normalises); damp to
+        # a useful 0..1 range with a soft-knee.
         audio_norm = float(np.clip(audio_norm * 0.5, 0.0, 1.0))
+
+        # Phase-17: compute live emitter positions from EmitterState +
+        # time, upload as a `vec3 u_emitters[14]` uniform. The shader
+        # reads this instead of computing its own ring.
+        emitters = compute_emitter_positions(
+            pattern=state.emitter.pattern,
+            radius=float(state.emitter.radius),
+            motion_amp=float(state.emitter.motion_amp),
+            motion_speed=float(state.emitter.motion_speed),
+            time_s=time_s,
+        )
 
         # ---- Update pass ---- #
         self._upload_update_uniforms(
@@ -354,7 +394,7 @@ class ParticleEngine:
             force_vortex=float(state.force.vortex),
             force_cohesion=float(state.force.cohesion),
             max_speed=float(state.force.max_speed),
-            viscosity=float(state.force.viscosity),
+            emitter_positions=emitters,
         )
 
         write_idx = 1 - self._read_idx
@@ -368,54 +408,22 @@ class ParticleEngine:
         )
         self._read_idx = write_idx
 
-        # ---- Camera ---- #
+        # ---- Render pass ---- #
+        # Camera matrix. Phase-13: mood + audio modulate the orbit
+        # speed and elevation at runtime — `mood.arousal` boosts orbit
+        # rate in proportion to audio_intensity (so the camera "leans
+        # into" loud sections), and the per-frame onset average gives
+        # a small upward elevation kick (mild camera-shake on hits).
         cam = state.camera
-
-        # Phase-17 centroid tracking: target the camera looks at is the
-        # audio-weighted average of emitter positions, smoothed across
-        # frames so the camera doesn't snap on every onset. Each
-        # channel's emitter contributes proportional to its activity
-        # (RMS + onset, gated by channel weight), with a small baseline
-        # so silent audio gives a stable origin-ish target.
-        if cam.track_centroid:
-            audio_w = (rms + onset * 0.5) * weight + 0.05
-            total_w = float(audio_w.sum())
-            if total_w > 1e-3:
-                raw_centroid = (
-                    _EMITTER_RING.T * audio_w[None, :]
-                ).sum(axis=1) / total_w
-            else:
-                raw_centroid = np.zeros(3, dtype=np.float32)
-            self._smoothed_centroid += (
-                raw_centroid - self._smoothed_centroid
-            ) * self._centroid_alpha
-            target = self._smoothed_centroid
-        else:
-            target = np.zeros(3, dtype=np.float32)
-
-        # Phase-13 audio coupling on orbit / elevation kept.
         arousal = float(state.mood.arousal)
         eff_orbit = cam.orbit_speed * (1.0 + 0.6 * arousal * audio_intensity)
         eff_elevation = cam.elevation + onset_avg * 4.0 * max(arousal, 0.0)
         azimuth = (time_s * eff_orbit * 6.2831853) if cam.autorotate else 0.0
-
-        # Orbit position is now an OFFSET from the target (not absolute).
-        orbit_eye = np.array(
-            camera_eye(cam.distance, eff_elevation, azimuth),
-            dtype=np.float32,
-        )
-        # Phase-17: organic Lissajous + audio-pulse drift on top.
-        drift = camera_drift_offset(time_s, float(cam.drift), audio_intensity)
-        eye_world = target + orbit_eye + drift
-
-        view = look_at_matrix(
-            tuple(eye_world.tolist()),
-            tuple(target.tolist()),
-            (0.0, 1.0, 0.0),
-        )
+        eye = camera_eye(cam.distance, eff_elevation, azimuth)
+        view = look_at_matrix(eye, (0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
         aspect = max(resolution[0] / max(resolution[1], 1), 0.01)
         proj = perspective_matrix(cam.fov_deg, aspect, near=0.1, far=50.0)
-        mvp = proj @ view
+        mvp = proj @ view  # column-major × column-major
 
         # Additive blending — bright particles glow brighter where they
         # overlap. Disable depth write so transparent edges don't
@@ -476,7 +484,7 @@ class ParticleEngine:
         force_vortex: float,
         force_cohesion: float,
         max_speed: float,
-        viscosity: float,
+        emitter_positions: np.ndarray,
     ) -> None:
         prog = self.update_program
         _set(prog, "u_dt", float(dt))
@@ -491,13 +499,13 @@ class ParticleEngine:
         _set(prog, "u_force_vortex", force_vortex)
         _set(prog, "u_force_cohesion", force_cohesion)
         _set(prog, "u_max_speed", max_speed)
-        # Phase-18.
-        _set(prog, "u_viscosity", float(viscosity))
         # Array uniforms.
         _set_array(prog, "u_rms", rms)
         _set_array(prog, "u_onset", onset)
         _set_array(prog, "u_centroid", centroid)
         _set_array(prog, "u_channel_weight", weight)
+        # Phase-17: emitter positions packed flat (14 × 3 = 42 floats).
+        _set_array(prog, "u_emitters", emitter_positions.reshape(-1))
 
     def _upload_render_uniforms(
         self,

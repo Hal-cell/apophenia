@@ -115,16 +115,35 @@ def test_force_streak_length_validates() -> None:
     assert f_max.streak_length == 0.5
 
 
-def test_force_viscosity_validates() -> None:
-    """Phase-18: viscosity ∈ [0, 1], default 0.5. Maps to drag."""
-    from apophenia.state import ForceState
+def test_emitter_state_defaults_and_validation() -> None:
+    """Phase-17 EmitterState: pattern selector + drift + radius."""
+    from apophenia.state import EmitterState
 
-    f = ForceState()
-    assert f.viscosity == 0.5
+    e = EmitterState()
+    assert e.pattern == "ring"
+    assert e.motion_amp == 0.0
+    assert e.motion_speed == 0.5
+    assert e.radius == 1.6
+
+    # Each pattern in the Literal set should validate.
+    for p in ("ring", "grid", "line", "sphere", "lissajous"):
+        EmitterState(pattern=p)
+
+    # Out-of-set pattern rejected.
+    with pytest.raises(ValidationError):
+        EmitterState(pattern="hexagon")  # type: ignore[arg-type]
 
     with pytest.raises(ValidationError):
-        ForceState(viscosity=-0.05)
+        EmitterState(motion_amp=1.5)
     with pytest.raises(ValidationError):
-        ForceState(viscosity=1.5)
-    ForceState(viscosity=0.0)
-    ForceState(viscosity=1.0)
+        EmitterState(motion_speed=3.0)
+    with pytest.raises(ValidationError):
+        EmitterState(radius=0.1)
+    with pytest.raises(ValidationError):
+        EmitterState(radius=10.0)
+
+
+def test_visual_state_includes_emitter_default() -> None:
+    s = VisualState()
+    assert s.emitter.pattern == "ring"
+    assert s.emitter.radius == 1.6

@@ -18,6 +18,8 @@ longer exists, and missing new fields fall back to defaults.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -124,12 +126,34 @@ class ForceState(BaseModel):
     streak), 0.5 = dramatic flow lines. Default 0.06 gives a subtle
     motion-blur feel without overwhelming the cluster shape."""
 
-    viscosity: float = Field(0.5, ge=0.0, le=1.0)
-    """Phase-18 fluid lever. Maps to the per-frame velocity-decay
-    drag: `vel *= mix(0.99, 0.92, viscosity)`. Low viscosity = thin /
-    gaseous (particles fly easily, settle slowly); high viscosity =
-    thick / oily (particles damp quickly, settle into laminar flow).
-    Default 0.5 → drag 0.955, the sweet spot for "fluid" feel."""
+
+class EmitterState(BaseModel):
+    """Phase-17: how the 14 audio-channel emitters are arranged in 3D
+    space, and whether they move over time.
+
+    Five built-in patterns shape the static base positions:
+      * `ring`      — phase 12 default; XZ-plane circle radius 1.6
+      * `grid`      — 7×2 grid; horizontal arrangement
+      * `line`      — single horizontal line along X axis
+      * `sphere`    — fibonacci-spiral distribution on a sphere
+      * `lissajous` — 3D lissajous curve
+
+    On top of the base, each emitter drifts on a per-channel
+    Lissajous orbit. `motion_amp` scales the orbit radius, `motion_speed`
+    the angular rate. `radius` scales the entire pattern uniformly.
+    """
+
+    pattern: Literal["ring", "grid", "line", "sphere", "lissajous"] = "ring"
+    motion_amp: float = Field(0.0, ge=0.0, le=1.0)
+    """How much each emitter wanders around its base position. 0 = static
+    (matches phase-12/13/14/15/16 behaviour); 1 = wide swing."""
+
+    motion_speed: float = Field(0.5, ge=0.0, le=2.0)
+    """Angular rate of the per-emitter drift orbit, revolutions/sec."""
+
+    radius: float = Field(1.6, ge=0.5, le=4.0)
+    """Uniform scale on the base pattern. The original ring had radius
+    1.6; smaller values pull all emitters in toward the origin."""
 
 
 class CameraState(BaseModel):
@@ -159,21 +183,6 @@ class CameraState(BaseModel):
     the camera holds at the orbit angle from the most recent `time` it
     saw — i.e. freezes in place."""
 
-    drift: float = Field(0.4, ge=0.0, le=2.0)
-    """Phase-17: organic camera-position drift on top of the orbit.
-    The camera eye gets a Lissajous offset (with audio-pulse component)
-    of approximately `drift × 0.5` units. 0 = pure orbit at fixed
-    distance/elevation; 2 = roaming nomadic camera that moves around
-    the scene like it's hand-held. Default 0.4 gives a subtle
-    breathing motion."""
-
-    track_centroid: bool = True
-    """Phase-17: when True, the camera continuously points at the
-    audio-weighted centroid of particle activity (smoothed via EMA),
-    so the camera follows where the music is happening. When False,
-    the camera looks at the world origin — useful for static framing
-    or when the user wants to see the full ring layout."""
-
 
 N_CHANNELS = 14
 
@@ -195,6 +204,7 @@ class VisualState(BaseModel):
     transport: TransportState = Field(default_factory=TransportState)
     camera: CameraState = Field(default_factory=CameraState)
     force: ForceState = Field(default_factory=ForceState)
+    emitter: EmitterState = Field(default_factory=EmitterState)
 
     def model_post_init(self, __context: object) -> None:  # noqa: D401
         """Validate channel_weight length matches N_CHANNELS."""
