@@ -14,8 +14,8 @@ import time
 import numpy as np
 import pytest
 
-from conduit.audio.mock import N_CHANNELS, PATTERNS, MockSource
-from conduit.audio.source import SourceSpecError, parse_source_arg
+from synapse.audio.mock import N_CHANNELS, PATTERNS, MockSource
+from synapse.audio.source import SourceSpecError, parse_source_arg
 
 
 @pytest.mark.parametrize("pattern", PATTERNS)

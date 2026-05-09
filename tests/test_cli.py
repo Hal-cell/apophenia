@@ -1,13 +1,13 @@
 """Tests for the CLI's read-only subcommands.
 
-`run` is verified end-to-end via `conduit run` smoke calls (manual);
+`run` is verified end-to-end via `synapse run` smoke calls (manual);
 we don't unit-test it because it spawns the GLSL window which needs a
 display. `devices` and `smoke` touch real audio hardware so are also
 covered manually.
 
 This module covers the deterministic subcommands:
-  * `conduit version` — package + dep versions
-  * `conduit config`  — resolved paths + default audio device
+  * `synapse version` — package + dep versions
+  * `synapse config`  — resolved paths + default audio device
   * `--help`            — lists all public subcommands
 """
 
@@ -15,16 +15,16 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from conduit.cli import app
+from synapse.cli import app
 
 runner = CliRunner()
 
 
-def test_version_command_runs_and_mentions_conduit() -> None:
+def test_version_command_runs_and_mentions_synapse() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0, result.stdout
     out = result.stdout.lower()
-    assert "conduit" in out
+    assert "synapse" in out
     assert "python" in out
 
 

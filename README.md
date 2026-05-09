@@ -1,4 +1,4 @@
-# conduit
+# synapse
 
 Multichannel audio analyser → MaxMSP bridge.
 
@@ -6,20 +6,19 @@ Reads up to 14 channels of audio from a Core Audio device (Expert
 Sleepers ES-9, BlackHole, Pro Tools Audio Bridge, anything class-
 compliant) and continuously extracts:
 
-- **CV** — slow-moving DC values per channel (Eurorack control voltage)
-- **Gate** — binary on/off state + rising/falling edge events per channel
-- **Spectrum** — FFT magnitude bins per channel (or summed mix)
+- **CV** — smoothed DC values + rate of change per channel (Eurorack control voltage)
+- **Gate** — Schmitt-triggered binary state + rising/falling edge events per channel
+- **Spectrum** — FFT magnitude bins per channel (planned)
 - **Extras** — RMS, peak, spectral centroid, onset envelope per channel
 - **CLAP** (optional) — 512-dim mood/genre audio embedding
 
 Forwards everything to MaxMSP (or any OSC consumer) so you can route
 the data into Unreal Engine, TouchDesigner, or any visual / generative
 system you like. The browser-based meter is a viewer for sanity-
-checking what's coming through; conduit itself does no rendering.
+checking what's coming through; synapse itself does no rendering.
 
-> **Status**: skeleton phase. The audio capture + feature pipeline +
-> meter UI are working; CV / gate / spectrum extraction + OSC output
-> are next.
+OSC schema is documented in [`docs/OSC_SCHEMA.md`](docs/OSC_SCHEMA.md).
+A starter Max patch is at [`examples/synapse_starter.maxpat`](examples/synapse_starter.maxpat).
 
 ## Project history
 
@@ -53,34 +52,55 @@ uv sync --extra dev    # + tests / linting
 ```
 
 Note: the GitHub repo is still named `apophenia` from the previous
-phase. The Python package is `conduit` (this is what you `import`
+phase. The Python package is `synapse` (this is what you `import`
 and what the CLI command is).
 
 ## Quick start
 
 ```bash
-# Mock 14ch audio + meter web UI on http://127.0.0.1:8000
-uv run conduit run --source mock:drums --no-clap
+# Mock 14ch audio + meter web UI on http://127.0.0.1:8000 + OSC → 127.0.0.1:9000
+uv run synapse run --source mock:drums --no-clap
 
-# Real device
-uv run conduit run --source device:"Pro Tools Audio Bridge 16"
+# Real ES-9 with channel role assignments (1-based, performer-friendly)
+uv run synapse run \
+    --source device:"ES-9" \
+    --gate "1,2" \
+    --cv "3-6" \
+    --osc-host 127.0.0.1 --osc-port 9000
+
+# Real device, OSC disabled (just web meter)
+uv run synapse run --source device:"Pro Tools Audio Bridge 16" --no-osc
 
 # List available audio devices
-uv run conduit devices
+uv run synapse devices
 
 # Headless audio sanity check (no UI)
-uv run conduit smoke -s mock:drums
+uv run synapse smoke -s mock:drums
 ```
 
 ## CLI
 
 | Command | Description |
 |---|---|
-| `conduit run` | Spin up audio capture + meter web UI |
-| `conduit devices` | List Core Audio input devices (★ for multichannel) |
-| `conduit smoke` | Pull frames for N seconds, print per-channel RMS table |
-| `conduit version` | Package + dependency versions |
-| `conduit config` | Resolved paths + default audio device |
+| `synapse run` | Spin up audio capture + meter web UI + OSC sender |
+| `synapse devices` | List Core Audio input devices (★ for multichannel) |
+| `synapse smoke` | Pull frames for N seconds, print per-channel RMS table |
+| `synapse version` | Package + dependency versions |
+| `synapse config` | Resolved paths + default audio device |
+
+### `synapse run` flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--source` | `mock:drums` | `device:<name>`, `mock:<pattern>`, or `file:<path>` |
+| `--gate <range>` | none | 1-based channels that carry Eurorack gates / triggers (e.g. `"1,2"`) |
+| `--cv <range>` | none | 1-based channels that carry Eurorack CV (e.g. `"3-6"` or `"3,5,8"`) |
+| `--audio <range>` | rest | 1-based channels for full audio analysis (default: anything not gate/cv) |
+| `--osc-host` | `127.0.0.1` | Where to send OSC bundles |
+| `--osc-port` | `9000` | UDP port to send OSC bundles to |
+| `--no-osc` | off | Disable OSC sending entirely (web meter only) |
+| `--no-clap` | off | Disable CLAP slow tier (skip 600MB model download) |
+| `--no-browser` | off | Don't auto-open the web meter |
 
 ## Architecture
 
@@ -88,12 +108,12 @@ uv run conduit smoke -s mock:drums
 ES-9 (or any class-compliant audio device)
    │ 14 ch @ 48kHz
    ▼
-┌─ conduit ──────────────────────────────────────────────────────────┐
+┌─ synapse ──────────────────────────────────────────────────────────┐
 │                                                                    │
 │  audio capture (sounddevice)  →  FastFeatures bus                  │
 │      ├ RMS / peak / centroid / onset (per channel)                 │
-│      ├ CV detection           ◄── (planned)                        │
-│      ├ Gate detection         ◄── (planned)                        │
+│      ├ CV detection           — IIR low-pass + dV/dt               │
+│      ├ Gate detection         — Schmitt trigger + edge events      │
 │      └ FFT spectrum           ◄── (planned)                        │
 │                                                                    │
 │  CLAP slow tier (optional)    →  SlowBus  ┐                        │
@@ -105,18 +125,23 @@ ES-9 (or any class-compliant audio device)
 │                              │ /health    liveness    │            │
 │                              └────────────────────────┘            │
 │                                            │                       │
-│                              ┌─ python-osc client ◄── (planned)    │
-│                              │ /conduit/cv/N    float              │
-│                              │ /conduit/gate/N  bool               │
-│                              │ /conduit/gate_event/N rising/...    │
-│                              │ /conduit/spectrum/N [bins...]       │
-│                              │ /conduit/...                        │
-│                              └────────────────────────┘            │
+│                              ┌─ python-osc client ─────┐           │
+│                              │ /synapse/cv/N      float (throttled)│
+│                              │ /synapse/cv_rate/N float            │
+│                              │ /synapse/gate/N    int 0|1          │
+│                              │ /synapse/gate_event/N "rising"/...  │
+│                              │ /synapse/rms|peak|centroid|onset/N  │
+│                              │ /synapse/block     int (heartbeat)  │
+│                              │ /synapse/clap      512×float + name │
+│                              └─────────────────────────┘           │
 │                                            │                       │
 └────────────────────────────────────────────┼───────────────────────┘
                                              ▼
                                     UDP :9000 → MaxMSP → Unreal
 ```
+
+Full schema with addresses, ranges, and bundle layout:
+[`docs/OSC_SCHEMA.md`](docs/OSC_SCHEMA.md).
 
 ## License
 

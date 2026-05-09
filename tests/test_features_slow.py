@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from conduit.audio.features_slow import (
+from synapse.audio.features_slow import (
     CLAP_EMBED_DIM,
     AudioBuffer,
     SlowBus,
@@ -235,7 +235,7 @@ def test_real_clap_encoder_loads_and_encodes() -> None:
     """Sanity check the actual HuggingFace CLAP can load + run on this
     machine. Skipped by default; opt in with APOPHENIA_RUN_CLAP=1.
     """
-    from conduit.audio.features_slow import ClapEncoder
+    from synapse.audio.features_slow import ClapEncoder
 
     enc = ClapEncoder()
     enc.load()

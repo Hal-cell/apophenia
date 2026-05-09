@@ -19,8 +19,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from conduit.audio import device as device_mod
-from conduit.audio.device import (
+from synapse.audio import device as device_mod
+from synapse.audio.device import (
     DeviceSource,
     DeviceSourceError,
     _negotiate_sample_rate,
