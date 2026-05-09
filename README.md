@@ -23,16 +23,6 @@ Two Max patches in `examples/`:
 - [`synapse_starter.maxpat`](examples/synapse_starter.maxpat) — minimal: ch1 CV / gate / spectrum widgets only, easy to read
 - [`synapse_full.maxpat`](examples/synapse_full.maxpat) — comprehensive: every category for all 14 channels (see [usage guide](examples/synapse_full_usage.md))
 
-## Project history
-
-This project started as **apophenia** — an audio-reactive AV
-instrument with a 14-layer GLSL shader engine, autopilot modulator,
-and Gray-Scott reaction-diffusion. That work is preserved at the
-`archive/apophenia-visual-instrument` git tag in case it's ever
-useful for reference. The current direction is far more focused:
-extract numeric data from audio, ship it cleanly over OSC, do
-nothing else.
-
 ## Hardware
 
 Anything class-compliant on macOS works. Tested:

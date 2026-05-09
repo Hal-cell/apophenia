@@ -9,9 +9,7 @@ requires-python = ">=3.12"
 
 # synapse: audio capture + feature pipeline (RMS / centroid / onset
 # / CV / gate / spectrum) + OSC output to MaxMSP + a small FastAPI
-# server hosting the web meter for live debugging. Replaced the
-# pre-pivot AV instrument; old code is preserved at the
-# `archive/apophenia-visual-instrument` git tag.
+# server hosting the web meter for live debugging.
 dependencies = [
     "numpy>=1.26",
     "sounddevice>=0.4.6",
