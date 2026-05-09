@@ -16,6 +16,12 @@
     --peak-line: #fbf2d4;
     --good: #5ac95a;
     --hot: #d8624e;
+    --cv-axis: #2a2a2a;
+    --cv-fill-pos: #5ac9d8;
+    --cv-fill-neg: #d89c5a;
+    --gate-on: #5ac95a;
+    --gate-off: #2a2a2a;
+    --spectrum-bar: #fbf2d4;
   }
   * { box-sizing: border-box; }
   body {
@@ -49,15 +55,15 @@
   #status .err { color: var(--hot); }
 
   main {
-    flex: 1; padding: 32px 24px;
+    flex: 1; padding: 24px;
     display: flex; flex-direction: column; align-items: center; gap: 24px;
-    max-width: 1400px; width: 100%; margin: 0 auto;
+    max-width: 1600px; width: 100%; margin: 0 auto;
   }
   .meters {
     display: grid;
-    grid-template-columns: repeat(14, 1fr);
     gap: 8px;
-    width: 100%; min-height: 360px;
+    width: 100%;
+    /* grid-template-columns is set dynamically based on n_channels */
   }
   .channel {
     display: flex; flex-direction: column; align-items: stretch;
@@ -66,19 +72,27 @@
     border-radius: 4px;
     overflow: hidden;
     position: relative;
-    min-height: 100%;
+    min-height: 320px;
   }
   .channel .label {
     text-align: center; padding: 6px 0;
     font-size: 10px; letter-spacing: 0.1em;
     color: var(--text-dim);
     border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; padding: 6px 8px;
   }
+  .channel .label .num { color: var(--accent); }
+  .channel .label .role { color: var(--text-dim); font-size: 9px; }
+  .channel.role-audio .label .role { color: var(--accent); }
+  .channel.role-cv .label .role { color: var(--cv-fill-pos); }
+  .channel.role-gate .label .role { color: var(--gate-on); }
+
+  /* ---------- audio role ---------- */
   .channel .meter {
     flex: 1; position: relative;
     background: var(--bar-bg);
     overflow: hidden;
-    min-height: 200px;
+    min-height: 180px;
   }
   .channel .fill {
     position: absolute; left: 0; right: 0; bottom: 0;
@@ -105,11 +119,99 @@
     border-top: 1px solid var(--border);
   }
   .channel .centroid {
-    border-top: none; padding-top: 0; padding-bottom: 5px;
+    border-top: none; padding-top: 0; padding-bottom: 3px;
     color: hsl(var(--hue, 100), 60%, 65%);
   }
-  .channel.silent .label { color: var(--text-dim); opacity: 0.4; }
+  .channel.silent .label { opacity: 0.6; }
   .channel.silent .meter { opacity: 0.4; }
+
+  /* spectrum mini-strip (audio cells only) */
+  .channel .spectrum {
+    display: flex; align-items: flex-end; justify-content: stretch;
+    gap: 1px;
+    height: 36px;
+    padding: 2px;
+    background: #050505;
+    border-top: 1px solid var(--border);
+  }
+  .channel .spectrum .sbin {
+    flex: 1;
+    background: var(--spectrum-bar);
+    min-height: 1px;
+    border-radius: 1px 1px 0 0;
+    transition: height 100ms ease-out, background 100ms ease-out;
+    opacity: 0.85;
+  }
+  .channel .spectrum.empty { opacity: 0.15; }
+
+  /* ---------- cv role ---------- */
+  .channel.role-cv .cv-body {
+    flex: 1;
+    background: var(--bar-bg);
+    position: relative;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    overflow: hidden;
+    min-height: 180px;
+  }
+  .channel.role-cv .cv-axis {
+    position: absolute; left: 0; right: 0; top: 50%;
+    height: 1px; background: var(--cv-axis);
+    pointer-events: none;
+  }
+  .channel.role-cv .cv-fill {
+    position: absolute; left: 8px; right: 8px;
+    background: var(--cv-fill-pos);
+    transition: top 50ms linear, height 50ms linear, background 60ms linear;
+    border-radius: 1px;
+  }
+  .channel.role-cv .cv-value {
+    position: relative; z-index: 1;
+    font-size: 18px; color: var(--accent);
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+  }
+  .channel.role-cv .cv-rate {
+    position: relative; z-index: 1;
+    font-size: 9px; color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  /* ---------- gate role ---------- */
+  .channel.role-gate .gate-body {
+    flex: 1;
+    background: var(--bar-bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px;
+    min-height: 180px;
+    position: relative;
+  }
+  .channel.role-gate .gate-led {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: var(--gate-off);
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.5);
+    transition: background 30ms linear, box-shadow 30ms linear;
+  }
+  .channel.role-gate.gate-on .gate-led {
+    background: var(--gate-on);
+    box-shadow: 0 0 16px rgba(90, 201, 90, 0.6);
+  }
+  .channel.role-gate .gate-state-text {
+    font-size: 11px; letter-spacing: 0.15em;
+    color: var(--text-dim);
+  }
+  .channel.role-gate.gate-on .gate-state-text { color: var(--gate-on); }
+  .channel.role-gate .gate-edge-flash {
+    position: absolute; left: 0; right: 0; top: 0; bottom: 0;
+    background: rgba(255, 255, 255, 0.0);
+    transition: background 80ms linear;
+    pointer-events: none;
+  }
+  .channel.role-gate.edge-rising .gate-edge-flash {
+    background: rgba(90, 201, 90, 0.25);
+  }
+  .channel.role-gate.edge-falling .gate-edge-flash {
+    background: rgba(216, 98, 78, 0.25);
+  }
 
   #clap-section {
     width: 100%;
@@ -173,49 +275,26 @@
   </main>
 
   <footer>
-    <span>level: <code>20·log10(rms)</code> dBFS bar height</span>
-    <span>colour: <code>HSL(centroid)</code> — orange = bass-y, blue = bright</span>
-    <span>top flash: <code>onset envelope</code> per channel</span>
+    <span>audio: <code>20·log10(rms)</code> dBFS bar · centroid hue · onset flash · 32-bin spectrum</span>
+    <span>cv: bipolar bar [-1, 1] · numeric value · rate ticker</span>
+    <span>gate: LED state · edge-event flash (green = rising, red = falling)</span>
     <span>clap: 512-dim audio embedding @ ~1Hz, downsampled to 32 bars</span>
   </footer>
 
 <script>
 (() => {
-  const N = 14;
   const FLOOR_DB = -60.0;
   const PEAK_HOLD_MS = 300;
+  const SPECTRUM_BARS = 32;
+  const EDGE_FLASH_MS = 150;
 
-  // Centroid → HSL hue. Linear is good enough for v1; consider log map
-  // (octaves) later. 50Hz → 30° (warm orange), 12kHz → 200° (cool blue).
+  // Centroid → HSL hue. 50Hz → 30° (warm orange), 12kHz → 200° (cool blue).
   const HUE_LO = 30, HUE_HI = 200;
   const CENTROID_LO = 50.0, CENTROID_HI = 12000.0;
 
   const meters = document.getElementById('meters');
-  const cells = [];
-  for (let i = 0; i < N; i++) {
-    const c = document.createElement('div');
-    c.className = 'channel';
-    c.innerHTML = `
-      <div class="label">ch${i + 1}</div>
-      <div class="meter">
-        <div class="flash"></div>
-        <div class="fill"></div>
-        <div class="peak"></div>
-      </div>
-      <div class="value">–∞</div>
-      <div class="centroid">—</div>`;
-    meters.appendChild(c);
-    cells.push({
-      root: c,
-      flash: c.querySelector('.flash'),
-      fill: c.querySelector('.fill'),
-      peak: c.querySelector('.peak'),
-      value: c.querySelector('.value'),
-      centroid: c.querySelector('.centroid'),
-      lastPeakDb: FLOOR_DB,
-      lastPeakAt: 0,
-    });
-  }
+  let cells = [];           // one entry per channel; shape varies by role
+  let currentRoles = null;  // re-built when the role list changes
 
   const wsState = document.getElementById('ws-state');
   const srcName = document.getElementById('src-name');
@@ -237,7 +316,6 @@
     clapHeat.appendChild(b);
     clapCells.push(b);
   }
-  let lastClapUpdate = 0;
 
   function setWsState(text, ok) {
     wsState.textContent = text;
@@ -264,6 +342,180 @@
     return hz.toFixed(0);
   }
 
+  // --------------------------------------------------------------- //
+  // Per-role cell builders
+  // --------------------------------------------------------------- //
+
+  function buildAudioCell(idx) {
+    const c = document.createElement('div');
+    c.className = 'channel role-audio';
+    const sbins = Array.from({length: SPECTRUM_BARS}, () => '<div class="sbin"></div>').join('');
+    c.innerHTML = `
+      <div class="label"><span class="num">ch${idx + 1}</span><span class="role">audio</span></div>
+      <div class="meter">
+        <div class="flash"></div>
+        <div class="fill"></div>
+        <div class="peak"></div>
+      </div>
+      <div class="value">–∞</div>
+      <div class="centroid">—</div>
+      <div class="spectrum empty">${sbins}</div>`;
+    return {
+      kind: 'audio',
+      root: c,
+      flash: c.querySelector('.flash'),
+      fill: c.querySelector('.fill'),
+      peak: c.querySelector('.peak'),
+      value: c.querySelector('.value'),
+      centroid: c.querySelector('.centroid'),
+      spectrum: c.querySelector('.spectrum'),
+      sbins: c.querySelectorAll('.sbin'),
+      lastPeakDb: FLOOR_DB,
+      lastPeakAt: 0,
+    };
+  }
+
+  function buildCvCell(idx) {
+    const c = document.createElement('div');
+    c.className = 'channel role-cv';
+    c.innerHTML = `
+      <div class="label"><span class="num">ch${idx + 1}</span><span class="role">cv</span></div>
+      <div class="cv-body">
+        <div class="cv-axis"></div>
+        <div class="cv-fill"></div>
+        <div class="cv-value">0.00</div>
+        <div class="cv-rate">—</div>
+      </div>`;
+    return {
+      kind: 'cv',
+      root: c,
+      fill: c.querySelector('.cv-fill'),
+      value: c.querySelector('.cv-value'),
+      rate: c.querySelector('.cv-rate'),
+    };
+  }
+
+  function buildGateCell(idx) {
+    const c = document.createElement('div');
+    c.className = 'channel role-gate';
+    c.innerHTML = `
+      <div class="label"><span class="num">ch${idx + 1}</span><span class="role">gate</span></div>
+      <div class="gate-body">
+        <div class="gate-edge-flash"></div>
+        <div class="gate-led"></div>
+        <div class="gate-state-text">OFF</div>
+      </div>`;
+    return {
+      kind: 'gate',
+      root: c,
+      stateText: c.querySelector('.gate-state-text'),
+      edgeTimer: null,
+    };
+  }
+
+  function rebuildCells(roles) {
+    meters.innerHTML = '';
+    cells = [];
+    const N = roles.length;
+    // Cap grid columns so cells don't shrink to nothing on small N.
+    const cols = Math.min(N, 14);
+    meters.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    for (let i = 0; i < N; i++) {
+      let cell;
+      switch (roles[i]) {
+        case 'cv': cell = buildCvCell(i); break;
+        case 'gate': cell = buildGateCell(i); break;
+        default: cell = buildAudioCell(i); break;
+      }
+      meters.appendChild(cell.root);
+      cells.push(cell);
+    }
+    currentRoles = roles.slice();
+  }
+
+  // --------------------------------------------------------------- //
+  // Per-role renderers (called every frame)
+  // --------------------------------------------------------------- //
+
+  function renderAudioCell(cell, idx, data, spectrumByCh) {
+    const rms = data.rms[idx] || 0;
+    const peak = data.peak[idx] || 0;
+    const cen = data.centroid[idx] || 0;
+    const env = data.onset_envelope[idx] || 0;
+    const now = performance.now();
+
+    const rmsDb = ampToDb(rms);
+    const peakDb = ampToDb(peak);
+    cell.fill.style.height = (dbToFrac(rmsDb) * 100) + '%';
+    if (cen > 0) {
+      cell.root.style.setProperty('--hue', centroidToHue(cen));
+      cell.centroid.textContent = fmtCentroid(cen);
+    } else {
+      cell.centroid.textContent = '—';
+    }
+    if (peakDb > cell.lastPeakDb || (now - cell.lastPeakAt) > PEAK_HOLD_MS) {
+      cell.lastPeakDb = peakDb;
+      cell.lastPeakAt = now;
+    }
+    cell.peak.style.bottom = (dbToFrac(cell.lastPeakDb) * 100) + '%';
+    cell.flash.style.opacity = env;
+    cell.value.textContent = rmsDb <= FLOOR_DB ? '–∞' : rmsDb.toFixed(0);
+    cell.root.classList.toggle('silent', rms < 1e-5);
+
+    const bins = spectrumByCh ? spectrumByCh[idx] : null;
+    if (bins && bins.length > 0) {
+      cell.spectrum.classList.remove('empty');
+      const hue = centroidToHue(cen || 1000);
+      const n = Math.min(bins.length, cell.sbins.length);
+      for (let i = 0; i < n; i++) {
+        const v = Math.max(0, Math.min(1, bins[i]));
+        const h = cell.sbins[i];
+        h.style.height = (1 + v * 95) + '%';
+        h.style.background = `hsl(${hue}, 70%, ${20 + v * 50}%)`;
+      }
+    }
+  }
+
+  function renderCvCell(cell, ch_idx, value, rate) {
+    // Map [-1, 1] → height % of cell, with 50% being zero. The fill
+    // grows up from centre for positive, down from centre for negative.
+    const v = Math.max(-1.5, Math.min(1.5, value));
+    const halfSpan = 50; // % of body height = half range
+    if (v >= 0) {
+      cell.fill.style.background = 'var(--cv-fill-pos)';
+      cell.fill.style.top = (50 - v * halfSpan) + '%';
+      cell.fill.style.height = (v * halfSpan) + '%';
+    } else {
+      cell.fill.style.background = 'var(--cv-fill-neg)';
+      cell.fill.style.top = '50%';
+      cell.fill.style.height = (-v * halfSpan) + '%';
+    }
+    cell.value.textContent = value.toFixed(3);
+    if (Math.abs(rate) >= 0.01) {
+      const arrow = rate > 0 ? '▲' : '▼';
+      cell.rate.textContent = `${arrow} ${rate.toFixed(2)}/s`;
+    } else {
+      cell.rate.textContent = '—';
+    }
+  }
+
+  function renderGateCell(cell, state, rising, falling) {
+    cell.root.classList.toggle('gate-on', state === 1 || state === true);
+    cell.stateText.textContent = (state === 1 || state === true) ? 'ON' : 'OFF';
+    if (rising || falling) {
+      cell.root.classList.remove('edge-rising', 'edge-falling');
+      cell.root.classList.add(rising ? 'edge-rising' : 'edge-falling');
+      if (cell.edgeTimer) clearTimeout(cell.edgeTimer);
+      cell.edgeTimer = setTimeout(() => {
+        cell.root.classList.remove('edge-rising', 'edge-falling');
+      }, EDGE_FLASH_MS);
+    }
+  }
+
+  // --------------------------------------------------------------- //
+  // Main render loop
+  // --------------------------------------------------------------- //
+
   let frameCount = 0;
   let fpsT0 = performance.now();
   setInterval(() => {
@@ -273,6 +525,12 @@
     frameCount = 0; fpsT0 = now;
   }, 1000);
 
+  function rolesEqual(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
   function render(data) {
     frameCount++;
     if (data.source_name) srcName.textContent = data.source_name;
@@ -280,37 +538,68 @@
     if (data.block_size) srcBlock.textContent = data.block_size;
     if (data.block_count != null) srcCount.textContent = data.block_count;
 
-    const rms = data.rms || [];
-    const peak = data.peak || [];
-    const centroid = data.centroid || [];
-    const onsets = data.onset_envelope || [];
-    const now = performance.now();
+    // Build / rebuild cells if roles changed.
+    const N = data.n_channels || (data.rms && data.rms.length) || 0;
+    let roles = data.roles && data.roles.length === N ? data.roles : null;
+    if (!roles) {
+      // Backwards-compat: assume all-audio if server didn't send roles.
+      roles = Array.from({length: N}, () => 'audio');
+    }
+    if (!rolesEqual(roles, currentRoles)) {
+      rebuildCells(roles);
+    }
 
-    for (let i = 0; i < N; i++) {
+    // Build spectrum lookup: { channel_index: [bins] }
+    let spectrumByCh = null;
+    if (data.spectrum && data.spectrum.spectrum_bins) {
+      spectrumByCh = {};
+      const channels = data.spectrum.spectrum_channels || [];
+      const allBins = data.spectrum.spectrum_bins || [];
+      for (let i = 0; i < channels.length; i++) {
+        spectrumByCh[channels[i]] = allBins[i];
+      }
+    }
+
+    // Build CV/gate lookup: { channel_index: { ... } }
+    let cvByCh = null;
+    if (data.cv && data.cv.cv_channels) {
+      cvByCh = {};
+      const ch = data.cv.cv_channels;
+      const vs = data.cv.cv_values || [];
+      const rs = data.cv.cv_rates || [];
+      for (let i = 0; i < ch.length; i++) cvByCh[ch[i]] = {value: vs[i], rate: rs[i]};
+    }
+    let gateByCh = null;
+    if (data.gate && data.gate.gate_channels) {
+      gateByCh = {};
+      const ch = data.gate.gate_channels;
+      const states = data.gate.gate_states || [];
+      const rising = data.gate.gate_rising || [];
+      const falling = data.gate.gate_falling || [];
+      for (let i = 0; i < ch.length; i++) {
+        gateByCh[ch[i]] = {
+          state: states[i], rising: rising[i], falling: falling[i],
+        };
+      }
+    }
+
+    for (let i = 0; i < cells.length; i++) {
       const cell = cells[i];
-      const rmsDb = ampToDb(rms[i] || 0);
-      const peakDb = ampToDb(peak[i] || 0);
-      cell.fill.style.height = (dbToFrac(rmsDb) * 100) + '%';
-
-      const c = centroid[i] || 0;
-      if (c > 0) {
-        cell.root.style.setProperty('--hue', centroidToHue(c));
-        cell.centroid.textContent = fmtCentroid(c);
-      } else {
-        cell.centroid.textContent = '—';
+      switch (cell.kind) {
+        case 'audio':
+          renderAudioCell(cell, i, data, spectrumByCh);
+          break;
+        case 'cv': {
+          const cv = cvByCh && cvByCh[i];
+          if (cv) renderCvCell(cell, i, cv.value, cv.rate);
+          break;
+        }
+        case 'gate': {
+          const g = gateByCh && gateByCh[i];
+          if (g) renderGateCell(cell, g.state, g.rising, g.falling);
+          break;
+        }
       }
-
-      if (peakDb > cell.lastPeakDb || (now - cell.lastPeakAt) > PEAK_HOLD_MS) {
-        cell.lastPeakDb = peakDb;
-        cell.lastPeakAt = now;
-      }
-      cell.peak.style.bottom = (dbToFrac(cell.lastPeakDb) * 100) + '%';
-
-      const env = onsets[i] || 0;
-      cell.flash.style.opacity = env;
-
-      cell.value.textContent = rmsDb <= FLOOR_DB ? '–∞' : rmsDb.toFixed(0);
-      cell.root.classList.toggle('silent', (rms[i] || 0) < 1e-5);
     }
 
     renderClap(data.slow);
@@ -350,7 +639,6 @@
       cell.style.height = (3 + v * 55) + 'px';
       cell.style.background = `hsl(${30 + (i / CLAP_BARS) * 170}, 60%, ${20 + v * 40}%)`;
     }
-    lastClapUpdate = slow.update_count;
     clapMeta.textContent =
       `update #${slow.update_count} · ${slow.inference_ms.toFixed(0)}ms · ‖z‖=${slow.embedding_norm.toFixed(2)} · ${slow.model_name.split('/').pop()}`;
   }

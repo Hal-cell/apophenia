@@ -13,6 +13,7 @@ from pythonosc import osc_bundle, osc_message
 
 from synapse.analysis.cv import CVFeatures
 from synapse.analysis.gate import GateFeatures
+from synapse.analysis.spectrum import SpectrumFeatures
 from synapse.audio.features_fast import FastFeatures
 from synapse.osc.sender import OSCSender
 
@@ -156,6 +157,39 @@ def test_gate_edge_event_only_fires_on_transition(listener) -> None:
     assert len(events) == 2
     assert events[0][1] == ["rising"]
     assert events[1][1] == ["falling"]
+
+
+def test_spectrum_emitted_as_one_message_per_channel(listener) -> None:
+    """When spectrum is passed, send_block emits `/synapse/spectrum/N` per
+    channel with all bin values as float args in a single OSC message."""
+    sender = OSCSender(host="127.0.0.1", port=listener.port)
+    spec = SpectrumFeatures(
+        channel_indices=[0, 2],  # 1-based: 1 and 3
+        bins=[[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]],
+        bin_edges_hz=[20.0, 200.0, 2000.0, 10000.0, 24000.0],
+        block_count=1,
+    )
+    sender.send_block(_fast(rms=[0.1, 0.1, 0.1, 0.1]), spectrum=spec)
+    time.sleep(0.05)
+    msgs = listener.messages()
+    spec_msgs = [(addr, args) for addr, args in msgs if addr.startswith("/synapse/spectrum/")]
+    assert len(spec_msgs) == 2
+    addrs = sorted(addr for addr, _ in spec_msgs)
+    assert addrs == ["/synapse/spectrum/1", "/synapse/spectrum/3"]
+    # Verify all 4 bin values made it through as floats.
+    by_addr = dict(spec_msgs)
+    assert by_addr["/synapse/spectrum/1"] == pytest.approx([0.1, 0.2, 0.3, 0.4])
+    assert by_addr["/synapse/spectrum/3"] == pytest.approx([0.5, 0.6, 0.7, 0.8])
+
+
+def test_spectrum_skipped_when_none(listener) -> None:
+    """No spectrum kwarg → no /synapse/spectrum/* messages on the wire."""
+    sender = OSCSender(host="127.0.0.1", port=listener.port)
+    sender.send_block(_fast(rms=[0.1] * 4))  # no spectrum arg
+    time.sleep(0.05)
+    msgs = listener.messages()
+    spec_msgs = [m for m in msgs if m[0].startswith("/synapse/spectrum/")]
+    assert spec_msgs == []
 
 
 def test_send_slow_emits_clap_message(listener) -> None:

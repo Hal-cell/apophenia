@@ -27,7 +27,7 @@ import typer
 import uvicorn
 from rich.console import Console
 
-from synapse.analysis import CVDetector, GateDetector
+from synapse.analysis import CVDetector, GateDetector, SpectrumDetector
 from synapse.audio.features_fast import FeatureBus, fast_features_loop
 from synapse.audio.features_slow import (
     CLAP_WINDOW_SECONDS,
@@ -122,12 +122,22 @@ def run(
 
     # ---- Detectors ---- #
     # Audio block rate (block_size samples at the source's sample_rate).
-    # CV detector + gate detector both run at this rate.
+    # CV detector + gate detector run at this rate; spectrum is throttled
+    # to ~30Hz internally.
     block_rate = src.sample_rate / src.block_size
     cv_idx = channel_map.channels_with(ChannelRole.CV)
     gate_idx = channel_map.channels_with(ChannelRole.GATE)
+    audio_idx = channel_map.channels_with(ChannelRole.AUDIO)
     cv_detector = CVDetector(cv_idx, block_rate_hz=block_rate) if cv_idx else None
     gate_detector = GateDetector(gate_idx) if gate_idx else None
+    spectrum_detector = (
+        SpectrumDetector(
+            audio_channel_indices=audio_idx,
+            sample_rate=src.sample_rate,
+            block_size=src.block_size,
+        )
+        if audio_idx else None
+    )
 
     # ---- OSC sender ---- #
     osc_sender = None if no_osc else OSCSender(host=osc_host, port=osc_port)
@@ -152,13 +162,19 @@ def run(
         )
         slow_thread.start()
 
+    # Per-channel role string list (length n_channels), used by the WS
+    # broadcaster so the web UI can render per-role widgets.
+    roles = [channel_map.role(i).value for i in range(src.n_channels)]
+
     audio_thread = threading.Thread(
         target=fast_features_loop,
         args=(src, bus, stop_event, audio_buffer),
         kwargs={
             "cv_detector": cv_detector,
             "gate_detector": gate_detector,
+            "spectrum_detector": spectrum_detector,
             "osc_sender": osc_sender,
+            "roles": roles,
         },
         name="audio_features_fast",
         daemon=True,

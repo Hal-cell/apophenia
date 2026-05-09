@@ -70,6 +70,13 @@ class FastFeatures:
 
     Lists are length `n_channels`. Pure-Python types so the dict
     serialises cleanly to JSON over WebSocket.
+
+    The `roles`, `cv`, `gate`, and `spectrum` fields carry a flat
+    JSON-ready payload of the role-specific extractors when those
+    are configured. The web UI reads these to render per-role widgets;
+    the OSC sender uses the corresponding dataclass-typed inputs (cv,
+    gate, spectrum kwargs to `send_block`) — these dict fields are
+    just for JSON serialisation onward.
     """
 
     rms: list[float] = field(default_factory=list)
@@ -86,6 +93,18 @@ class FastFeatures:
     sample_rate: int = 0
     block_size: int = 0
     n_channels: int = 0
+
+    # Per-channel role tag ("audio" | "cv" | "gate"), one entry per channel.
+    # Set once at loop startup from the CLI's ChannelMap.
+    roles: list[str] = field(default_factory=list)
+
+    # Latest sub-feature payloads (already to_dict()'d). None when the
+    # corresponding detector isn't wired. `spectrum` is sticky between
+    # the spectrum detector's throttled emissions, so the UI always
+    # has a recent frame.
+    cv: dict | None = None
+    gate: dict | None = None
+    spectrum: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -259,7 +278,9 @@ def fast_features_loop(
     audio_buffer: object | None = None,
     cv_detector: object | None = None,
     gate_detector: object | None = None,
+    spectrum_detector: object | None = None,
     osc_sender: object | None = None,
+    roles: list[str] | None = None,
 ) -> None:
     """Pump audio blocks through feature extraction and into the bus.
 
@@ -268,17 +289,25 @@ def fast_features_loop(
     raises.
 
     Optional detectors / outputs:
-      * `audio_buffer` — an `AudioBuffer` (from features_slow) that the
-        slow CLAP worker reads from. Each block also gets written here.
-      * `cv_detector`  — a `CVDetector` for slow DC value extraction.
-      * `gate_detector` — a `GateDetector` for Schmitt-triggered binary
-        state + edge events.
-      * `osc_sender`   — an `OSCSender` that ships every block's
-        features as one OSC bundle to MaxMSP / any UDP listener.
+      * `audio_buffer`     — an `AudioBuffer` (from features_slow) that the
+                             slow CLAP worker reads from. Each block also
+                             gets written here.
+      * `cv_detector`      — a `CVDetector` for slow DC value extraction.
+      * `gate_detector`    — a `GateDetector` for Schmitt-triggered binary
+                             state + edge events.
+      * `spectrum_detector`— a `SpectrumDetector` for log-spaced FFT bins
+                             (throttled to ~30Hz; the bus carries the
+                             most recent emitted frame).
+      * `osc_sender`       — an `OSCSender` that ships every block's
+                             features as one OSC bundle to MaxMSP / any
+                             UDP listener.
+      * `roles`            — per-channel role string list (length
+                             n_channels) for the web UI's per-role
+                             rendering.
 
-    All four params are typed `object` to keep features_fast cheap to
-    import — they live in sibling packages with their own deps that we
-    don't want this module pulling in transitively.
+    All detector params are typed `object` to keep features_fast cheap
+    to import — they live in sibling packages with their own deps that
+    we don't want this module pulling in transitively.
     """
     source.open()
     block_count = 0
@@ -289,6 +318,7 @@ def fast_features_loop(
         sample_rate=source.sample_rate,
         block_size=source.block_size,
     )
+    roles_payload = list(roles) if roles else []
     try:
         for block in source.frames():
             if stop_event.is_set():
@@ -298,6 +328,24 @@ def fast_features_loop(
                 audio_buffer.write(block)  # type: ignore[attr-defined]
             rms, peak, centroid = compute_block_features(block, source.sample_rate, window=window)
             envelope = detector.update(rms)
+
+            cv_features = (
+                cv_detector.process(block, block_count)  # type: ignore[attr-defined]
+                if cv_detector is not None else None
+            )
+            gate_features = (
+                gate_detector.process(block, block_count)  # type: ignore[attr-defined]
+                if gate_detector is not None else None
+            )
+            # spectrum_detector.process returns None on throttled blocks;
+            # we always pass the latest known frame (sticky) onto the bus
+            # so the WS UI sees a steady spectrum.
+            if spectrum_detector is not None:
+                spectrum_detector.process(block, block_count)  # type: ignore[attr-defined]
+                spectrum_latest = spectrum_detector.latest()  # type: ignore[attr-defined]
+            else:
+                spectrum_latest = None
+
             fast_features = FastFeatures(
                 rms=rms.tolist(),
                 peak=peak.tolist(),
@@ -309,21 +357,33 @@ def fast_features_loop(
                 sample_rate=source.sample_rate,
                 block_size=source.block_size,
                 n_channels=source.n_channels,
+                roles=roles_payload,
+                cv=cv_features.to_dict() if cv_features is not None else None,
+                gate=gate_features.to_dict() if gate_features is not None else None,
+                spectrum=spectrum_latest.to_dict() if spectrum_latest is not None else None,
             )
             bus.publish(fast_features)
 
-            cv_features = (
-                cv_detector.process(block, block_count)  # type: ignore[attr-defined]
-                if cv_detector is not None else None
-            )
-            gate_features = (
-                gate_detector.process(block, block_count)  # type: ignore[attr-defined]
-                if gate_detector is not None else None
-            )
-
             if osc_sender is not None:
+                # Spectrum is throttled — only emit on boundary blocks
+                # to OSC (Max doesn't need the same value re-sent at
+                # 94Hz). `spectrum_detector.process(...)` already ran
+                # above; we just need its return value, not latest().
+                # Re-fetch through a one-call cached path: we kept
+                # the detector emit on `_last`, and the spectrum arg
+                # below decides whether to send at this block.
+                spectrum_for_osc = (
+                    spectrum_latest if (
+                        spectrum_detector is not None
+                        and spectrum_latest is not None
+                        and spectrum_latest.block_count == block_count
+                    ) else None
+                )
                 osc_sender.send_block(  # type: ignore[attr-defined]
-                    fast_features, cv=cv_features, gate=gate_features,
+                    fast_features,
+                    cv=cv_features,
+                    gate=gate_features,
+                    spectrum=spectrum_for_osc,
                 )
     finally:
         source.close()
