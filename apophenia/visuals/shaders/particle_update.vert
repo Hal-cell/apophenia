@@ -2,40 +2,40 @@
 
 // PARTICLE UPDATE — transform-feedback simulation step.
 //
-// Phase-15 redesign:
-//   * Particles are PERSISTENT. No LIFETIME, no respawn, no dead
-//     pool. Every particle is always alive and on screen. This kills
-//     the "popping in/out" behaviour from earlier phases.
-//   * Forces sum over ALL 14 emitters per particle, not just the
-//     particle's home channel. Every individual particle is affected
-//     by every audio channel — louder channels exert stronger pulls
-//     + spin, silent ones contribute nothing. The home channel still
-//     exerts a baseline pull (`HOME_BIAS`) so particles don't
-//     wander forever when all channels go quiet.
-//   * Onset transients now KICK velocity outward instead of
-//     respawning particles. The onset envelope decays over ~30ms so
-//     the kick lasts a few frames and then forces resume normal,
-//     producing the classic transient-burst feel without any spawn
-//     / despawn.
-//   * `age` field is retained in the state layout (for ABI stability
-//     with the existing 8-float packing) but is now just "time since
-//     last onset kick on this particle's home channel" — used in
-//     render for transient-flash brightness modulation.
+// Phase-18 reshape (fluid dynamics): the per-frame jitter / drift /
+// collapse problems came from a few force-model issues that I'm
+// replacing here:
 //
-// State packing unchanged:
-//   pos_age = (pos.xyz, age)
-//   vel_seed = (vel.xyz, seed)
+//   * smoothstep deadband on home cohesion left close particles with
+//     near-zero pull, so secondary forces (noise, multi-emitter) won
+//     and particles drifted away over time → REPLACED with a tanh
+//     saturation that keeps strong pull even at small distances
+//   * over-aggressive onset kicks (~3× speed_scale) caused whip-crack
+//     jitter → SOFTENED to ~1× and ramp via envelope
+//   * curl noise scale was too tight (0.45) so neighbour particles
+//     saw uncorrelated forces → flow looked grainy → LOWERED to 0.28
+//     so neighbours flow together (laminar)
+//   * world bound at r=8 was too lax → particles drifted far → TIGHTENED
+//     to r=4 with a hard-reset escape valve at r=5 (snap back to home)
+//   * secondary multi-emitter pull constant 0.25 was too strong → with
+//     all channels active particles got dragged to centroid →
+//     REDUCED to 0.08
+//
+// Drag is now driven by a `u_viscosity` uniform: `vel *= mix(0.99,
+// 0.92, viscosity)`. High viscosity gives thick fluid; low gives
+// gaseous, lively motion.
 
 uniform float u_dt;
 uniform float u_time;
-uniform float u_density;          // emission strength (state.motion.density)
-uniform float u_speed_scale;      // velocity multiplier (state.motion.speed)
-uniform float u_onset_gain;       // onset envelope multiplier
+uniform float u_density;
+uniform float u_speed_scale;
+uniform float u_onset_gain;
 
 uniform float u_force_noise;
 uniform float u_force_vortex;
 uniform float u_force_cohesion;
 uniform float u_max_speed;
+uniform float u_viscosity;
 
 uniform float u_audio_intensity;
 uniform float u_audio_norm;
@@ -45,10 +45,12 @@ uniform float u_centroid[14];
 uniform float u_channel_weight[14];
 
 const int N_CHANNELS = 14;
-const float HOME_BIAS = 1.2;       // home-channel pull (always on) — must
-                                   // dominate the secondary other-channel
-                                   // contributions to preserve cluster identity
-const float ONSET_THRESHOLD = 0.3; // onset envelope above this triggers kick
+const float HOME_BIAS = 1.2;
+const float ONSET_THRESHOLD = 0.3;
+// Phase-18: tighter scene radius. Particles near r=4 feel a soft
+// pullback; particles past r=5 get hard-reset to home.
+const float SOFT_BOUND = 4.0;
+const float HARD_BOUND = 5.0;
 
 in vec4 in_pos_age;
 in vec4 in_vel_seed;
@@ -86,8 +88,11 @@ float vnoise3(vec3 p) {
     );
 }
 
+// Phase-18: lowered spatial frequency `s = 0.28` (was 0.45) so
+// neighbour particles see correlated forces — flow looks laminar
+// instead of grainy.
 vec3 flow_field(vec3 p, float t) {
-    float s = 0.45;
+    float s = 0.28;
     float ts = 0.18;
     return vec3(
         vnoise3(p * s + vec3(t * ts,        0.0,         0.0))         - 0.5,
@@ -104,20 +109,12 @@ vec3 emitter_pos(int channel) {
                 sin(angle) * radius);
 }
 
-// Phase-17: each channel has a unique deterministic XYZ kick
-// direction. Uses golden-ratio sequencing for the azimuth + a Fibonacci
-// lattice scheme for elevation — known to give very evenly-spaced
-// points on a unit sphere with low pairwise alignment. Critical for
-// the "every channel moves the cluster a different way" feel.
 vec3 channel_kick_dir(int channel) {
     float i = float(channel);
-    // Fibonacci sphere lattice (Saff & Kuijlaars):
-    //   y = 1 - 2(i + 0.5)/N      — uniformly spaced cosine of latitude
-    //   az = 2π × i × (1/φ²)      — golden-ratio azimuth winds
     float n = float(N_CHANNELS);
     float y = 1.0 - 2.0 * (i + 0.5) / n;
     float r = sqrt(max(1.0 - y * y, 0.0));
-    float az = i * 2.39996323;  // 2π × (1 - 1/φ²) ≈ 2.39996
+    float az = i * 2.39996323;
     return vec3(r * cos(az), y, r * sin(az));
 }
 
@@ -131,42 +128,32 @@ void main() {
     my_channel = clamp(my_channel, 0, N_CHANNELS - 1);
     float my_onset = u_onset[my_channel] * u_onset_gain;
 
-    // age = time since last hot onset on home channel; just a counter
-    // for the render shader's transient-flash modulation.
     age += u_dt;
     if (my_onset > ONSET_THRESHOLD) {
         age = 0.0;
     }
 
-    // -------- Position update (semi-implicit Euler) -------- //
+    // Position update (semi-implicit Euler).
     pos += vel * u_dt;
 
-    // -------- Forces -------- //
-    // Home emitter dominates: every particle has a strong, always-on
-    // pull + vortex toward its home channel's anchor (silent or not),
-    // which is what gives the visual its 14-cluster identity. Each of
-    // the OTHER 13 channels then contributes a small directional bias
-    // only when audibly active — that's the "every particle feels
-    // every channel" behaviour the user asked for, but tuned so a
-    // single loud channel pulls particles slightly toward it without
-    // dissolving the cluster structure entirely.
-
-    vec3 home_em   = emitter_pos(my_channel);
-    vec3 to_home   = home_em - pos;
+    // -------- Spring-force home cohesion -------- //
+    // Phase-18: replaced smoothstep deadband with `tanh(dist × 0.7)`
+    // saturation. Particles within ~1 unit of home feel substantial
+    // pull (was: near-zero), so home identity holds even when other
+    // channels are active. tanh saturates at 1 for far particles so
+    // the pull doesn't grow unbounded.
+    vec3 home_em = emitter_pos(my_channel);
+    vec3 to_home = home_em - pos;
     float home_dist = length(to_home);
-    float home_dist_safe = max(home_dist, 0.4);
+    float home_dist_safe = max(home_dist, 1e-3);
 
-    // Home cohesion: smoothstep so a particle right at the emitter
-    // isn't yanked. HOME_BIAS scales with home channel's activity so
-    // a loud home tightens the cluster.
     float home_strength = HOME_BIAS
                         + u_rms[my_channel] * u_channel_weight[my_channel] * 0.6;
-    vec3 cohesion_sum = (to_home / home_dist_safe)
-                      * home_strength
-                      * smoothstep(0.4, 4.0, home_dist);
+    // tanh saturation gives strong pull even at close range.
+    float home_pull = home_strength * tanh(home_dist * 0.7);
+    vec3 cohesion_sum = (to_home / home_dist_safe) * home_pull;
 
-    // Home vortex: always-on rotation around the home anchor; onset
-    // spikes the spin.
+    // Home vortex (audio-modulated tangential rotation around emitter).
     vec3 home_rel = pos - home_em;
     vec3 home_tan = cross(vec3(0.0, 1.0, 0.0), home_rel);
     vec3 vortex_sum = home_tan
@@ -174,11 +161,8 @@ void main() {
                     / (0.6 + home_dist);
 
     // -------- Other channels' weak influence -------- //
-    // Each other-channel contributes a weak directional pull + a
-    // weak vortex bias when audibly active. Floor gates silent
-    // channels so they don't add noise. Constants are deliberately
-    // small (~0.25) so the home cluster survives even when many
-    // other channels go loud.
+    // Phase-18: secondary pull constant lowered 0.25 → 0.08 so dense
+    // audio doesn't pull every particle to the centroid.
     for (int i = 0; i < N_CHANNELS; i++) {
         if (i == my_channel) continue;
         float activity_i = (u_rms[i] + u_onset[i] * 1.5)
@@ -190,20 +174,16 @@ void main() {
         float dist = length(to_em);
         float dist_safe = max(dist, 0.4);
 
-        // Weak attractive pull, scaled by audio activity. Distance
-        // falloff reaches max at dist=5 so close-by emitters pull
-        // more than far-side-of-the-ring ones.
         float pull = activity_i
                    * smoothstep(0.5, 5.0, dist)
                    / dist_safe
-                   * 0.25;
+                   * 0.08;
         cohesion_sum += to_em * pull;
 
-        // Weak vortex contribution around this emitter.
         vec3 rel = pos - ep;
-        vec3 tan = cross(vec3(0.0, 1.0, 0.0), rel);
-        float vstr = activity_i / (0.6 + dist) * 0.3;
-        vortex_sum += tan * vstr;
+        vec3 tan_v = cross(vec3(0.0, 1.0, 0.0), rel);
+        float vstr = activity_i / (0.6 + dist) * 0.18;
+        vortex_sum += tan_v * vstr;
     }
 
     // -------- Curl-noise field -------- //
@@ -216,45 +196,52 @@ void main() {
           + vortex_sum   * u_force_vortex
           + noise_force) * u_dt;
 
-    // -------- Phase-17 directional onset kick on home channel -------- //
-    // Each channel has a unique XYZ direction (channel_kick_dir). On
-    // a hot onset, particles in that channel get a velocity boost
-    // along that direction — plus a small per-particle random jitter
-    // so repeated hits don't go in EXACTLY the same direction
-    // (avoids robotic feel; adds individual particle variation
-    // within the cluster's collective surge). The kick is much
-    // larger than the phase-15 radial kick (~3× speed) so transients
-    // genuinely move the cluster, not just shimmer it.
+    // -------- Onset directional kick (phase-17, softened by phase-18) -- //
+    // Phase-18: kick magnitude lowered 3.0 → 1.0. The onset envelope
+    // already decays geometrically over ~5 frames so the cumulative
+    // impulse is still meaningful, just spread over time → fluid feel
+    // instead of whip-crack jolt.
     if (my_onset > ONSET_THRESHOLD) {
         vec3 base_dir = channel_kick_dir(my_channel);
-        vec3 jitter = (hash33(seed * 31.7 + u_time * 11.0) - 0.5) * 0.6;
+        vec3 jitter = (hash33(seed * 31.7 + u_time * 11.0) - 0.5) * 0.5;
         vec3 kick = normalize(base_dir + jitter);
-        vel += kick * my_onset * u_speed_scale * 3.0 * u_dt;
+        vel += kick * my_onset * u_speed_scale * 1.0 * u_dt;
     }
 
-    // -------- Drag (quadratic-ish) -------- //
-    float speed = length(vel);
-    float drag = 0.985 - 0.06 * smoothstep(1.0, 4.0, speed);
+    // -------- Drag (viscosity-driven) -------- //
+    // Phase-18: drag now driven by `u_viscosity`. mix(0.99, 0.92, ν).
+    // High ν = sticky / oily; low = airy. The 0.92 floor still has
+    // enough damping to keep simulation stable.
+    float drag = mix(0.99, 0.92, u_viscosity);
     vel *= drag;
 
     // -------- Speed cap -------- //
-    speed = length(vel);
+    float speed = length(vel);
     if (speed > u_max_speed) {
         vel *= u_max_speed / speed;
     }
 
     // -------- Soft world bound -------- //
-    // Without this, particles can wander to infinity if all channels
-    // go silent and curl noise alone keeps pushing them. Pull anything
-    // beyond r=8 gently back toward the origin.
+    // Particles past SOFT_BOUND feel a quadratic restoring force back
+    // toward origin. Smooth — doesn't visibly clamp or kink.
     float r = length(pos);
-    if (r > 8.0) {
-        vel -= (pos / max(r, 0.01)) * (r - 8.0) * 0.6 * u_dt;
+    if (r > SOFT_BOUND) {
+        float over = r - SOFT_BOUND;
+        vel -= (pos / max(r, 0.01)) * over * over * 1.8 * u_dt;
     }
 
-    // u_density controls the "active fraction" — used to be a respawn
-    // gate; now it modulates max speed implicitly via a small velocity
-    // damping when density is low.
+    // -------- Hard reset for runaways -------- //
+    // Phase-18: if a particle escapes the scene (r > HARD_BOUND) or
+    // its velocity exceeds 1.5× the cap (typical of accumulated kicks),
+    // teleport it back to a small sphere around its home with a damped
+    // velocity. Keeps the visible scene populated.
+    if (r > HARD_BOUND || speed > u_max_speed * 1.5) {
+        vec3 reset_jitter = (hash33(seed * 53.7 + u_time * 7.0) - 0.5) * 0.6;
+        pos = home_em + reset_jitter;
+        vel *= 0.3;
+    }
+
+    // Density modulates max speed implicitly (phase-14 retain).
     if (u_density < 0.5) {
         vel *= mix(0.92, 1.0, u_density * 2.0);
     }

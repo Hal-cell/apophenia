@@ -124,6 +124,13 @@ class ForceState(BaseModel):
     streak), 0.5 = dramatic flow lines. Default 0.06 gives a subtle
     motion-blur feel without overwhelming the cluster shape."""
 
+    viscosity: float = Field(0.5, ge=0.0, le=1.0)
+    """Phase-18 fluid lever. Maps to the per-frame velocity-decay
+    drag: `vel *= mix(0.99, 0.92, viscosity)`. Low viscosity = thin /
+    gaseous (particles fly easily, settle slowly); high viscosity =
+    thick / oily (particles damp quickly, settle into laminar flow).
+    Default 0.5 → drag 0.955, the sweet spot for "fluid" feel."""
+
 
 class CameraState(BaseModel):
     """3D camera around the particle world. Phase-12 addition.
