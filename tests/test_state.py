@@ -94,3 +94,22 @@ def test_visual_state_includes_force_default() -> None:
     s = VisualState()
     assert s.force.cohesion == 0.5
     assert s.force.max_speed == 2.0
+
+
+def test_force_streak_length_validates() -> None:
+    """Phase-16: streak_length is the velocity-aligned line length in
+    seconds-of-motion. Default 0.06 (subtle); range [0, 0.5]."""
+    from apophenia.state import ForceState
+
+    f = ForceState()
+    assert f.streak_length == 0.06
+
+    with pytest.raises(ValidationError):
+        ForceState(streak_length=-0.1)
+    with pytest.raises(ValidationError):
+        ForceState(streak_length=0.6)  # above 0.5 ceiling
+    # Boundary values should validate.
+    f_zero = ForceState(streak_length=0.0)
+    assert f_zero.streak_length == 0.0
+    f_max = ForceState(streak_length=0.5)
+    assert f_max.streak_length == 0.5

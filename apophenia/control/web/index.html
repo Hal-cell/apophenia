@@ -578,6 +578,11 @@
           <input type="range" id="force-max_speed" min="0.5" max="8" step="0.1" value="2.0">
           <span class="ctrl-value" id="force-max_speed-v">2.0</span>
         </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">streak</span>
+          <input type="range" id="force-streak_length" min="0" max="0.5" step="0.005" value="0.06">
+          <span class="ctrl-value" id="force-streak_length-v">0.06</span>
+        </div>
       </section>
     </div>
 
@@ -767,6 +772,7 @@
     'force.vortex':             bindSlider('force-vortex',             'force.vortex'),
     'force.cohesion':           bindSlider('force-cohesion',           'force.cohesion'),
     'force.max_speed':          bindSlider('force-max_speed',          'force.max_speed', (v) => v.toFixed(1)),
+    'force.streak_length':      bindSlider('force-streak_length',      'force.streak_length', (v) => v.toFixed(3)),
   };
 
   // ---------------------------------------------------------------- //
@@ -1067,12 +1073,15 @@
       sliders['camera.fov_deg'].set(s.camera.fov_deg);
       toggleAutorotate.set(s.camera.autorotate);
     }
-    // force (phase 14)
+    // force (phase 14, phase 16)
     if (s.force) {
       sliders['force.noise'].set(s.force.noise);
       sliders['force.vortex'].set(s.force.vortex);
       sliders['force.cohesion'].set(s.force.cohesion);
       sliders['force.max_speed'].set(s.force.max_speed);
+      if (s.force.streak_length !== undefined) {
+        sliders['force.streak_length'].set(s.force.streak_length);
+      }
     }
   }
 

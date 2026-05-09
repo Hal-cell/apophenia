@@ -117,6 +117,13 @@ class ForceState(BaseModel):
     into a fluid-like flow rather than letting them accelerate
     indefinitely."""
 
+    streak_length: float = Field(0.06, ge=0.0, le=0.5)
+    """Phase-16 visual: how long each particle's velocity-aligned
+    streak is, in *seconds of motion*. The render shader places the
+    streak's tail at `pos - vel × streak_length`. 0 = points (no
+    streak), 0.5 = dramatic flow lines. Default 0.06 gives a subtle
+    motion-blur feel without overwhelming the cluster shape."""
+
 
 class CameraState(BaseModel):
     """3D camera around the particle world. Phase-12 addition.

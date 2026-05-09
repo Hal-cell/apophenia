@@ -143,7 +143,8 @@ VOCABULARY: dict[str, dict[str, Any]] = {
 
     # ---- Trail / feedback ---- #
     "trail":     {"fx": {"trail": 0.7}},
-    "trails":    {"fx": {"trail": 0.7}},
+    # `trails` is defined later in the streak section — combines
+    # screen-space feedback trail + per-particle velocity streak.
     "smear":     {"fx": {"trail": 0.85}},
     "ghost":     {"fx": {"trail": 0.8}, "palette": {"saturation": 0.7}},
     "ghosting":  {"fx": {"trail": 0.85}},
@@ -235,6 +236,26 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "exploding":  {"force": {"cohesion": 0.0, "vortex": 0.1, "noise": 0.4,
                              "max_speed": 5.0},
                    "motion": {"onset_sensitivity": 1.7}},
+
+    # ---- Streak length (phase 16) ---- #
+    # Each particle is rendered as a velocity-aligned line from
+    # `pos - vel * streak_length` (tail) to `pos` (head). At 0 the
+    # line is degenerate and you see a near-point; at high values
+    # particles look like full flow ribbons.
+    "streaks":    {"force": {"streak_length": 0.18}},
+    "lines":      {"force": {"streak_length": 0.20}},
+    "ribbons":    {"force": {"streak_length": 0.30}},
+    # Combine screen-space feedback trail (fx.trail) with per-particle
+    # velocity streak — gives the most "smeary motion" reading.
+    "trails":     {"force": {"streak_length": 0.22},
+                   "fx": {"trail": 0.7}},
+    "comet":      {"force": {"streak_length": 0.40, "max_speed": 3.0}},
+    "wisps":      {"force": {"streak_length": 0.25, "cohesion": 0.5,
+                             "max_speed": 1.4}},
+    # Anti: kill streaks → render as points.
+    "points":     {"force": {"streak_length": 0.0}},
+    "dots":       {"force": {"streak_length": 0.0}},
+    "stippled":   {"force": {"streak_length": 0.0, "cohesion": 0.6}},
 
     # ---- Behaviour primitives ---- #
     "bloom":     {"motion": {"speed": 0.7, "density": 0.6,
