@@ -63,14 +63,15 @@ class Modulator:
         # a stable "color identity" lasting tens of seconds), bloom
         # mid-term, glitch / chromatic / kaleidoscope short-term,
         # freeze rare and slow.
-        self.w_hue        = Wanderer(seed=seed + 1, period_s=120.0)
-        self.w_sat        = Wanderer(seed=seed + 2, period_s=60.0)
-        self.w_bloom      = Wanderer(seed=seed + 3, period_s=45.0)
-        self.w_chromatic  = Wanderer(seed=seed + 4, period_s=20.0)
-        self.w_kal        = Wanderer(seed=seed + 5, period_s=25.0)
-        self.w_focus      = Wanderer(seed=seed + 6, period_s=40.0)
-        self.w_spread     = Wanderer(seed=seed + 7, period_s=35.0)
-        self.w_freeze     = Wanderer(seed=seed + 8, period_s=180.0)
+        self.w_hue        = Wanderer(seed=seed + 1,  period_s=120.0)
+        self.w_sat        = Wanderer(seed=seed + 2,  period_s=60.0)
+        self.w_bloom      = Wanderer(seed=seed + 3,  period_s=45.0)
+        self.w_chromatic  = Wanderer(seed=seed + 4,  period_s=20.0)
+        self.w_kal        = Wanderer(seed=seed + 5,  period_s=25.0)
+        self.w_focus      = Wanderer(seed=seed + 6,  period_s=40.0)
+        self.w_spread     = Wanderer(seed=seed + 7,  period_s=35.0)
+        self.w_freeze     = Wanderer(seed=seed + 8,  period_s=180.0)
+        self.w_trail      = Wanderer(seed=seed + 9,  period_s=80.0)
         # Counters for telemetry / inspection — the modulator itself
         # is stateless w.r.t. the *output* state, but we expose how
         # often it's been called for logging.
@@ -123,6 +124,14 @@ class Modulator:
         glitch = max(0.0, onset_max - 0.7) * 1.5
         glitch = _clamp(glitch, 0.0, 1.0)
 
+        # Trail / feedback: maps wanderer ∈ [-1, 1] → [0, 0.9]. The
+        # 0.9 cap keeps us below the runaway-saturation regime
+        # (where every pixel converges to white). Most of the time
+        # trail sits in 0.3..0.7 — gentle motion blur. Occasional
+        # excursions to 0.85+ produce dramatic ghosting passages.
+        trail = (self.w_trail.value(time_s) + 1.0) * 0.45
+        trail = _clamp(trail, 0.0, 0.9)
+
         # Kaleidoscope: discrete jumps at threshold crossings of a slow
         # wanderer. Most of the time = 1 (off); rare excursions to 3 / 6 / 9.
         k_val = self.w_kal.value(time_s)
@@ -163,6 +172,7 @@ class Modulator:
             palette=PaletteState(hue=hue, saturation=sat),
             fx=FxState(
                 bloom=bloom,
+                trail=trail,
                 glitch=glitch,
                 chromatic=chrom,
                 kaleidoscope=kaleidoscope,
