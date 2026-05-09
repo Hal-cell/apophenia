@@ -77,11 +77,11 @@
 			{ "box" :  {
 				"id" : "obj-route-categories",
 				"maxclass" : "newobj",
-				"text" : "route cv gate gate_event rms onset centroid peak block clap",
-				"patching_rect" : [ 30.0, 215.0, 480.0, 22.0 ],
+				"text" : "route cv gate gate_event rms onset centroid peak spectrum block clap",
+				"patching_rect" : [ 30.0, 215.0, 540.0, 22.0 ],
 				"numinlets" : 1,
-				"numoutlets" : 10,
-				"outlettype" : [ "", "", "", "", "", "", "", "", "", "" ]
+				"numoutlets" : 11,
+				"outlettype" : [ "", "", "", "", "", "", "", "", "", "", "" ]
 			} },
 			{ "box" :  {
 				"id" : "obj-comment-cv",
@@ -167,16 +167,51 @@
 				"patching_rect" : [ 60.0, 503.0, 540.0, 20.0 ]
 			} },
 			{ "box" :  {
-				"id" : "obj-comment-rms",
+				"id" : "obj-comment-spectrum",
+				"maxclass" : "comment",
+				"text" : "/spectrum/N — 32 log-spaced magnitude bins per audio channel @ ~30Hz. Drives [multislider] directly.",
+				"patching_rect" : [ 30.0, 540.0, 600.0, 20.0 ]
+			} },
+			{ "box" :  {
+				"id" : "obj-route-spectrum-channels",
+				"maxclass" : "newobj",
+				"text" : "route /1 /2 /3 /4 /5 /6 /7 /8 /9 /10 /11 /12 /13 /14",
+				"patching_rect" : [ 30.0, 565.0, 460.0, 22.0 ],
+				"numinlets" : 1,
+				"numoutlets" : 15,
+				"outlettype" : [ "", "", "", "", "", "", "", "", "", "", "", "", "", "", "" ]
+			} },
+			{ "box" :  {
+				"id" : "obj-spec1-mslider",
+				"maxclass" : "multislider",
+				"patching_rect" : [ 30.0, 600.0, 320.0, 80.0 ],
+				"numinlets" : 1,
+				"numoutlets" : 2,
+				"outlettype" : [ "", "bang" ],
+				"size" : 32,
+				"contdata" : 1,
+				"setminmax" : [ 0.0, 1.0 ],
+				"slidercolor" : [ 0.984, 0.949, 0.831, 1.0 ],
+				"bgcolor" : [ 0.094, 0.094, 0.094, 1.0 ],
+				"setstyle" : 0
+			} },
+			{ "box" :  {
+				"id" : "obj-spec1-label",
+				"maxclass" : "comment",
+				"text" : "ch1 spectrum (32 bins)",
+				"patching_rect" : [ 360.0, 625.0, 200.0, 20.0 ]
+			} },
+			{ "box" :  {
+				"id" : "obj-comment-other",
 				"maxclass" : "comment",
 				"text" : "Other streams (rms, peak, centroid, onset, block, clap) routed but not visualised — extend as needed.",
-				"patching_rect" : [ 30.0, 545.0, 700.0, 20.0 ]
+				"patching_rect" : [ 30.0, 700.0, 700.0, 20.0 ]
 			} },
 			{ "box" :  {
 				"id" : "obj-comment-extend",
 				"maxclass" : "comment",
 				"text" : "To forward to Unreal: tap any of the routed signals → [udpsend <unreal-host> <unreal-port>] with whatever address pattern Unreal is set up to receive.\n\nFull schema in docs/OSC_SCHEMA.md.",
-				"patching_rect" : [ 30.0, 590.0, 800.0, 60.0 ]
+				"patching_rect" : [ 30.0, 745.0, 800.0, 60.0 ]
 			} }
 		],
 		"lines" : [
@@ -215,6 +250,14 @@
 			{ "patchline" :  {
 				"source" : [ "obj-route-event-channels", 0 ],
 				"destination" : [ "obj-gate1-event-bang", 0 ]
+			} },
+			{ "patchline" :  {
+				"source" : [ "obj-route-categories", 7 ],
+				"destination" : [ "obj-route-spectrum-channels", 0 ]
+			} },
+			{ "patchline" :  {
+				"source" : [ "obj-route-spectrum-channels", 0 ],
+				"destination" : [ "obj-spec1-mslider", 0 ]
 			} }
 		]
 	}

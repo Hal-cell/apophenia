@@ -46,6 +46,7 @@ from pythonosc.udp_client import UDPClient
 
 from synapse.analysis.cv import CVFeatures
 from synapse.analysis.gate import GateFeatures
+from synapse.analysis.spectrum import SpectrumFeatures
 from synapse.audio.features_fast import FastFeatures
 
 logger = logging.getLogger(__name__)
@@ -83,12 +84,15 @@ class OSCSender:
         fast: FastFeatures,
         cv: CVFeatures | None = None,
         gate: GateFeatures | None = None,
+        spectrum: SpectrumFeatures | None = None,
     ) -> None:
         """Build one bundle from the current block's features and send.
 
         `fast` is required (RMS / centroid / onset for all channels);
-        `cv` and `gate` are only present when their respective
-        detectors are configured for one or more channels.
+        `cv`, `gate`, and `spectrum` are only present when their
+        respective detectors are configured for one or more channels.
+        Spectrum is throttled at the detector — pass `None` on
+        non-emit blocks to skip the OSC bandwidth.
         """
         bundle = OscBundleBuilder(0)  # 0 = "send immediately"
         added = 0
@@ -137,6 +141,12 @@ class OSCSender:
                 if falling:
                     added += _add_msg(bundle, f"/synapse/gate_event/{ch1}", "falling")
 
+        # ---- spectrum: throttled (per-channel float-list message) ---- #
+        if spectrum is not None:
+            for ch_idx, bins in zip(spectrum.channel_indices, spectrum.bins, strict=False):
+                ch1 = ch_idx + 1
+                added += _add_spectrum_msg(bundle, f"/synapse/spectrum/{ch1}", bins)
+
         # ---- block heartbeat ---- #
         added += _add_msg(bundle, "/synapse/block", int(fast.block_count))
 
@@ -183,4 +193,23 @@ def _add_msg(bundle: OscBundleBuilder, address: str, value: object) -> int:
         return 1
     except Exception:  # noqa: BLE001
         logger.exception("OSC build failed at %s", address)
+        return 0
+
+
+def _add_spectrum_msg(bundle: OscBundleBuilder, address: str, bins: list[float]) -> int:
+    """Add a per-channel spectrum message (N floats, one OSC message
+    with N float args).
+
+    Max parses this as `address, f1, f2, ... fN`. Use `[zl group N]` or
+    `[unpack f f f ...]` to split into individual values, or feed the
+    whole list to `[multislider]` for a one-line spectrum view.
+    """
+    try:
+        builder = OscMessageBuilder(address)
+        for v in bins:
+            builder.add_arg(float(v))
+        bundle.add_content(builder.build())
+        return 1
+    except Exception:  # noqa: BLE001
+        logger.exception("OSC build failed at %s (spectrum)", address)
         return 0

@@ -50,6 +50,22 @@ analog noise near the threshold doesn't toggle. Uses the per-block
 peak (not mean) so brief Eurorack triggers (~2ms pulses inside an
 ~11ms block) still register.
 
+## Spectrum (audio channels, throttled ~30Hz)
+
+Each audio channel gets one OSC message per emission carrying all
+N (default 32) log-spaced magnitude bins as float arguments.
+Throttled to ~30Hz at the detector (configurable) — between
+boundaries no spectrum messages are sent.
+
+| Address | Type | Range | Description |
+|---|:---:|:---:|---|
+| `/synapse/spectrum/N` | float × n_bins | [0, 1] | Soft-compressed log-spaced magnitude bins (default 32 bins, fmin=20Hz → nyquist) |
+
+In Max, parse with `[zl group 32]` after `[oscparse]` to recover the
+32-element list, or hand directly to `[multislider]` for a one-line
+spectrum view. Bin layout is documented as `bin_edges_hz` in the WS
+payload (33 edges define 32 bins, geometrically spaced).
+
 ## Block heartbeat (every block)
 
 | Address | Type | Description |
@@ -84,6 +100,8 @@ went rising and ch3's CV moved:
   /synapse/gate/1           1
   /synapse/gate/2           0
   /synapse/gate_event/1     "rising"
+  /synapse/spectrum/6       0.02 0.05 0.18 ... (32 floats, audio channels, throttled ~30Hz)
+  /synapse/spectrum/7       0.01 0.04 0.21 ...
   /synapse/block            12345
 [/bundle]
 ```
@@ -100,16 +118,17 @@ went rising and ch3's CV moved:
 [route /synapse]
     │
     ▼
-[route cv gate gate_event rms peak centroid onset block clap]
-   │   │     │            │   │     │       │     │      └───→ slow CLAP embedding
-   │   │     │            │   │     │       │     └──────────→ block counter
-   │   │     │            │   │     │       └────────────────→ onset envelope
-   │   │     │            │   │     └────────────────────────→ centroid
-   │   │     │            │   └──────────────────────────────→ peak
-   │   │     │            └──────────────────────────────────→ RMS
-   │   │     └───────────────────────────────────────────────→ "rising" / "falling" events
-   │   └─────────────────────────────────────────────────────→ gate state (0/1)
-   └─────────────────────────────────────────────────────────→ CV value
+[route cv gate gate_event rms peak centroid onset spectrum block clap]
+   │   │     │            │   │     │       │     │        │     └───→ slow CLAP embedding
+   │   │     │            │   │     │       │     │        └─────────→ block counter
+   │   │     │            │   │     │       │     └──────────────────→ 32-bin spectrum (audio chs, ~30Hz)
+   │   │     │            │   │     │       └────────────────────────→ onset envelope
+   │   │     │            │   │     └────────────────────────────────→ centroid
+   │   │     │            │   └──────────────────────────────────────→ peak
+   │   │     │            └──────────────────────────────────────────→ RMS
+   │   │     └───────────────────────────────────────────────────────→ "rising" / "falling" events
+   │   └─────────────────────────────────────────────────────────────→ gate state (0/1)
+   └─────────────────────────────────────────────────────────────────→ CV value
 ```
 
 After the second `[route]` you'll have the channel number as the

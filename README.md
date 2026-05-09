@@ -8,9 +8,9 @@ compliant) and continuously extracts:
 
 - **CV** — smoothed DC values + rate of change per channel (Eurorack control voltage)
 - **Gate** — Schmitt-triggered binary state + rising/falling edge events per channel
-- **Spectrum** — FFT magnitude bins per channel (planned)
-- **Extras** — RMS, peak, spectral centroid, onset envelope per channel
-- **CLAP** (optional) — 512-dim mood/genre audio embedding
+- **Spectrum** — 32 log-spaced FFT magnitude bins per audio channel @ ~30Hz
+- **Extras** — RMS, peak, spectral centroid, onset envelope per channel (every block)
+- **CLAP** (optional) — 512-dim mood/genre audio embedding @ ~1Hz
 
 Forwards everything to MaxMSP (or any OSC consumer) so you can route
 the data into Unreal Engine, TouchDesigner, or any visual / generative
@@ -114,7 +114,7 @@ ES-9 (or any class-compliant audio device)
 │      ├ RMS / peak / centroid / onset (per channel)                 │
 │      ├ CV detection           — IIR low-pass + dV/dt               │
 │      ├ Gate detection         — Schmitt trigger + edge events      │
-│      └ FFT spectrum           ◄── (planned)                        │
+│      └ Spectrum               — 32 log-spaced bins @ ~30Hz         │
 │                                                                    │
 │  CLAP slow tier (optional)    →  SlowBus  ┐                        │
 │      512-dim audio embedding  @ ~1Hz       │                       │
@@ -131,6 +131,7 @@ ES-9 (or any class-compliant audio device)
 │                              │ /synapse/gate/N    int 0|1          │
 │                              │ /synapse/gate_event/N "rising"/...  │
 │                              │ /synapse/rms|peak|centroid|onset/N  │
+│                              │ /synapse/spectrum/N 32×float (~30Hz)│
 │                              │ /synapse/block     int (heartbeat)  │
 │                              │ /synapse/clap      512×float + name │
 │                              └─────────────────────────┘           │
