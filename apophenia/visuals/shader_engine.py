@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from apophenia.audio.features_fast import FastFeatures, FeatureBus
     from apophenia.autopilot import Modulator
     from apophenia.state import VisualState
+    from apophenia.visuals.reaction_diffusion import ReactionDiffusion
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def centroid_to_hue(hz: float) -> float:
 
 # Preset roster. Each shader is a self-contained fragment-only preset
 # using the shared uniform interface (see `shaders/*.frag`).
-# All eight are grounded in a maths or physics model:
+# All nine are grounded in a maths or physics model:
 #   flow         — domain-warped FBM noise field; organic mist
 #   prism        — rotating regular-polygon SDF; hard-edged colour shards
 #   plasma       — 3-octave FBM metaball; lava-lamp pad texture
@@ -77,6 +78,11 @@ def centroid_to_hue(hz: float) -> float:
 #                  surface (Schoen-class TPMS) with analytic-gradient
 #                  Lambertian shading; the only preset with a real
 #                  3D feel via lit normals
+#   reaction     — Gray-Scott PDE simulation of two-species reaction-
+#                  diffusion (∂U/∂t = D·∇²U − UV² + F(1−U), etc.).
+#                  Renders the activator concentration as a continuously
+#                  evolving Turing pattern (spots / mazes / mitosis).
+#                  Backed by `ReactionDiffusion` simulator on the GPU.
 PRESETS = (
     "flow",
     "prism",
@@ -86,6 +92,7 @@ PRESETS = (
     "curl_noise",
     "quasicrystal",
     "gyroid",
+    "reaction",
 )
 
 
@@ -100,8 +107,8 @@ class Layer:
     channel: int
 
 
-# Default 14-layer mapping. 8 presets × 14 channels — most presets get
-# 2 layers, one gets a singleton. Channel groups roughly:
+# Default 14-layer mapping. 9 presets × 14 channels — most presets get
+# 1-2 layers each. Channel groups roughly:
 #   Ch1-3:   percussion-flavoured (kick / bass / lead)
 #   Ch4:     pad — smooth flowing surface
 #   Ch5-8:   percussion / FX channels — mix of organic + structural
@@ -118,7 +125,7 @@ DEFAULT_LAYERS: list[Layer] = [
     Layer(preset="shock",         channel=7),    # perc  → radial pulse
     Layer(preset="quasicrystal",  channel=8),    # FX    → aperiodic lattice
     Layer(preset="prism",         channel=9),    # FX    → rotating polygon
-    Layer(preset="lattice",       channel=10),   # FX    → voronoi
+    Layer(preset="reaction",      channel=10),   # FX    → Gray-Scott Turing pattern
     Layer(preset="gyroid",        channel=11),   # drone → 3D minimal surface
     Layer(preset="curl_noise",    channel=12),   # drone → incompressible flow
     Layer(preset="plasma",        channel=13),   # drone → smooth plasma
@@ -135,9 +142,11 @@ class ShaderEngine:
         self,
         ctx: moderngl.Context,
         layers: list[Layer] | None = None,
+        reaction_sim: ReactionDiffusion | None = None,
     ) -> None:
         self.ctx = ctx
         self.layers: list[Layer] = list(layers) if layers else list(DEFAULT_LAYERS)
+        self.reaction_sim: ReactionDiffusion | None = reaction_sim
 
         for layer in self.layers:
             if layer.preset not in PRESETS:
@@ -149,6 +158,16 @@ class ShaderEngine:
                     f"layer.channel must be a non-negative int, got {layer.channel}"
                 )
 
+        # If any layer uses the `reaction` preset we MUST have a sim. The
+        # preset's frag samples `u_sim_tex` so without a bound texture
+        # the GPU reads an undefined unit. Catch this at init time
+        # rather than at render time.
+        if reaction_sim is None and any(L.preset == "reaction" for L in self.layers):
+            raise ValueError(
+                "ShaderEngine has a 'reaction' layer but no reaction_sim; "
+                "construct a ReactionDiffusion(ctx) and pass it in."
+            )
+
         # Build one Program per distinct preset that any layer uses.
         vert_src = (SHADER_DIR / "quad.vert").read_text()
         used = sorted({layer.preset for layer in self.layers})
@@ -159,6 +178,12 @@ class ShaderEngine:
                 vertex_shader=vert_src,
                 fragment_shader=frag_src,
             )
+
+        # Pin the simulation-texture sampler unit on the reaction
+        # program (if present) so it consistently reads from unit 1,
+        # leaving 0 free for layer-internal samplers.
+        if "reaction" in self.programs:
+            _set_uniform(self.programs["reaction"], "u_sim_tex", 1)
 
         # Full-screen quad as a triangle strip. Same VBO drives all programs.
         quad_vertices = np.array(
@@ -185,7 +210,22 @@ class ShaderEngine:
         correction in shaders). `state` is an optional VisualState that
         applies per-channel weights, palette hue offset, etc.; if None,
         the engine renders with neutral defaults.
+
+        If a `reaction_sim` was provided at construction time, its
+        Gray-Scott PDE is sub-stepped *once per render call* (5 PDE
+        steps by default) before any layers are drawn. The sim binds
+        its own intermediate FBOs / viewport during stepping; we
+        capture the caller's framebuffer at entry and restore it
+        before drawing layers, so this is transparent to the caller.
         """
+        # Step the reaction-diffusion simulation if present. This must
+        # happen BEFORE we do `ctx.clear` or anything else, because the
+        # sim swaps to its own internal FBOs and would otherwise wipe
+        # whatever target the caller bound. It restores the caller's
+        # FBO + viewport itself.
+        if self.reaction_sim is not None:
+            self.reaction_sim.step()
+
         # Clear with full alpha so empty regions are solid black, then
         # additive-blend each layer on top.
         self.ctx.clear(0.0, 0.0, 0.0, 1.0)
@@ -194,6 +234,11 @@ class ShaderEngine:
 
         if features is None:
             return  # bus not populated yet
+
+        # Bind the simulation texture once (unit 1) for any `reaction`
+        # layers to sample. Cheap to bind even if no layer uses it.
+        if self.reaction_sim is not None:
+            self.reaction_sim.texture.use(location=1)
 
         rms_arr = features.rms or []
         cent_arr = features.centroid or []
@@ -497,7 +542,14 @@ class ApopheniaWindow(mglw.WindowConfig):
             )
         self._bus_ref: FeatureBus = ApopheniaWindow.bus
         self._modulator_ref: Modulator | None = ApopheniaWindow.modulator
-        self.engine = ShaderEngine(self.ctx)
+        # Reaction-diffusion simulation lives on the GPU + steps every
+        # frame. Cheap (256² × 5 PDE sub-steps ≈ 0.05ms). We give the
+        # engine a reference so the `reaction` preset has its texture
+        # to sample.
+        from apophenia.visuals.reaction_diffusion import ReactionDiffusion
+
+        self.reaction_sim = ReactionDiffusion(self.ctx)
+        self.engine = ShaderEngine(self.ctx, reaction_sim=self.reaction_sim)
         self.compositor = Compositor(self.ctx)
         self._frame_count = 0
         self._fps_t0 = time.monotonic()

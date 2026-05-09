@@ -119,12 +119,25 @@ def test_engine_rejects_negative_channel() -> None:
         ctx.release()
 
 
+def _engine_with_default_layers(ctx):
+    """Build a ShaderEngine with DEFAULT_LAYERS — supplying a
+    ReactionDiffusion sim if any default layer needs it."""
+    from apophenia.visuals.reaction_diffusion import ReactionDiffusion
+
+    sim = (
+        ReactionDiffusion(ctx)
+        if any(L.preset == "reaction" for L in DEFAULT_LAYERS)
+        else None
+    )
+    return ShaderEngine(ctx, reaction_sim=sim)
+
+
 def test_engine_compiles_all_default_shaders() -> None:
     ctx = _try_make_ctx()
     if ctx is None:
         pytest.skip("no GL context available")
     try:
-        engine = ShaderEngine(ctx)
+        engine = _engine_with_default_layers(ctx)
         used = {layer.preset for layer in DEFAULT_LAYERS}
         assert set(engine.programs.keys()) == used
         assert set(engine.vaos.keys()) == used
@@ -140,7 +153,7 @@ def test_engine_render_produces_nonblack_output() -> None:
     if ctx is None:
         pytest.skip("no GL context available")
     try:
-        engine = ShaderEngine(ctx)
+        engine = _engine_with_default_layers(ctx)
         size = (256, 256)
         tex = ctx.texture(size, components=4, dtype="f1")
         fbo = ctx.framebuffer(color_attachments=[tex])
@@ -162,10 +175,13 @@ def test_engine_render_produces_nonblack_output() -> None:
         ctx.release()
 
 
-@pytest.mark.parametrize("preset", PRESETS)
+_FAST_PRESETS = tuple(p for p in PRESETS if p != "reaction")
+
+
+@pytest.mark.parametrize("preset", _FAST_PRESETS)
 def test_each_shader_renders_nonblack_when_driven(preset: str) -> None:
-    """Each preset, fed audible RMS + a centroid + an onset envelope,
-    must produce visible output."""
+    """Each preset (except reaction — see dedicated test), fed audible
+    RMS + a centroid + an onset envelope, must produce visible output."""
     from apophenia.audio.features_fast import FastFeatures
 
     ctx = _try_make_ctx()
@@ -202,6 +218,93 @@ def test_each_shader_renders_nonblack_when_driven(preset: str) -> None:
         ctx.release()
 
 
+def test_reaction_sim_evolves_pattern() -> None:
+    """The Gray-Scott simulation must actually progress — the texture
+    after N PDE steps should differ from the initial seed state."""
+    from apophenia.visuals.reaction_diffusion import ReactionDiffusion
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        sim = ReactionDiffusion(ctx)
+        # Sample initial state (just-seeded).
+        # We can read back the texture as raw bytes and sample.
+        # moderngl Texture.read returns the texel data.
+        size = sim.size
+        initial_bytes = sim.texture.read()
+        # Step 200 PDE steps (40 calls × 5 sub-steps).
+        for _ in range(40):
+            sim.step()
+        evolved_bytes = sim.texture.read()
+        # The byte buffers should differ — sim has evolved.
+        assert initial_bytes != evolved_bytes, (
+            "reaction sim didn't change after 200 steps — PDE update broken"
+        )
+        # And the result should still be in-range. Read as fp16 array.
+        import numpy as np
+        arr = np.frombuffer(evolved_bytes, dtype=np.float16).reshape(
+            size[1], size[0], 4
+        )
+        # All values should be finite + clamped to [0, 1].
+        assert np.all(np.isfinite(arr))
+        assert np.all((arr >= -0.001) & (arr <= 1.001))
+    finally:
+        ctx.release()
+
+
+def test_reaction_preset_renders_after_warmup() -> None:
+    """The `reaction` layer renders meaningfully after the simulation
+    has had a few hundred PDE steps to bloom from its seed. Bare minimum:
+    > 30 lit pixels at threshold > 20 (vs. the looser non-zero check
+    other shaders use, since reaction's smoothstep is intentionally
+    high-threshold)."""
+    from apophenia.audio.features_fast import FastFeatures
+    from apophenia.visuals.reaction_diffusion import ReactionDiffusion
+
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        sim = ReactionDiffusion(ctx)
+        # Warm up the simulation — at default Gray-Scott params (mitosis
+        # / spots), patterns become visible after a few hundred PDE
+        # steps. 100 calls × 5 sub-steps = 500 PDE steps is comfortable.
+        for _ in range(100):
+            sim.step()
+
+        engine = ShaderEngine(
+            ctx,
+            layers=[Layer(preset="reaction", channel=0)],
+            reaction_sim=sim,
+        )
+        size = (128, 128)
+        tex = ctx.texture(size, components=4, dtype="f1")
+        fbo = ctx.framebuffer(color_attachments=[tex])
+        fbo.use()
+        ctx.viewport = (0, 0, *size)
+
+        features = FastFeatures(
+            rms=[0.7] + [0.0] * 13,
+            peak=[0.8] + [0.0] * 13,
+            centroid=[3000.0] + [0.0] * 13,
+            onset_envelope=[0.5] + [0.0] * 13,
+            n_channels=14,
+        )
+        engine.render(features, time_s=5.0, resolution=size)
+
+        raw = fbo.read(components=4, dtype="f1")
+        bright = sum(
+            1 for i in range(0, len(raw), 4)
+            if raw[i] > 20 or raw[i + 1] > 20 or raw[i + 2] > 20
+        )
+        assert bright > 30, (
+            f"reaction preset after 500 PDE steps: only {bright} bright pixels"
+        )
+    finally:
+        ctx.release()
+
+
 def test_engine_render_with_zero_channel_weights_is_black() -> None:
     """When all channel weights are 0, every layer's u_channel_weight is
     zero, so shaders multiply to nothing → frame is solid black."""
@@ -212,7 +315,7 @@ def test_engine_render_with_zero_channel_weights_is_black() -> None:
     if ctx is None:
         pytest.skip("no GL context available")
     try:
-        engine = ShaderEngine(ctx)
+        engine = _engine_with_default_layers(ctx)
         size = (64, 64)
         tex = ctx.texture(size, components=4, dtype="f1")
         fbo = ctx.framebuffer(color_attachments=[tex])
