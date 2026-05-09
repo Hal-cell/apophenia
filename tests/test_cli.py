@@ -1,13 +1,14 @@
 """Tests for the CLI's read-only subcommands.
 
-`run` is verified end-to-end via `apophenia run --no-render --no-clap
---no-ai` smoke calls (manual + the docs); we don't unit-test it because
-it spawns daemon threads + a uvicorn server. `devices` and `smoke` are
-also covered by manual tests since they touch real audio hardware.
+`run` is verified end-to-end via `apophenia run` smoke calls (manual);
+we don't unit-test it because it spawns the GLSL window which needs a
+display. `devices` and `smoke` touch real audio hardware so are also
+covered manually.
 
-This module covers the small, deterministic subcommands added in phase 8:
-  * `apophenia version` — should mention the package + Python version
-  * `apophenia config`  — should print the resolved preset path
+This module covers the deterministic subcommands:
+  * `apophenia version` — package + dep versions
+  * `apophenia config`  — resolved paths + default audio device
+  * `--help`            — lists all public subcommands
 """
 
 from __future__ import annotations
@@ -27,33 +28,25 @@ def test_version_command_runs_and_mentions_apophenia() -> None:
     assert "python" in out
 
 
-def test_version_command_lists_extra_packages() -> None:
-    """Version output should surface key deps so users can sanity-check
+def test_version_command_lists_key_packages() -> None:
+    """Version output surfaces key deps so users can sanity-check
     their environment when filing a bug."""
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     out = result.stdout.lower()
     assert "numpy" in out
-    assert "fastapi" in out
+    assert "pydantic" in out
+    assert "moderngl" in out
 
 
-def test_config_command_prints_preset_path() -> None:
+def test_config_command_runs_clean() -> None:
+    """`config` should run without error and print the audio device row."""
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0, result.stdout
-    out = result.stdout
-    assert "presets" in out.lower()
-    # The default preset path includes 'apophenia'.
-    assert "apophenia" in out
-    assert "presets.json" in out
-
-
-def test_config_command_mentions_audio_source() -> None:
-    """`config` should say something about the default audio device, even
-    if it's "no input devices visible" — the user wants to know either
-    way."""
-    result = runner.invoke(app, ["config"])
-    assert result.exit_code == 0
     out = result.stdout.lower()
+    # Phase 13: there's no preset state on disk anymore (autopilot is
+    # deterministic from seed) — just verify it runs and mentions the
+    # audio source.
     assert "audio" in out or "input" in out or "source" in out
 
 
