@@ -63,6 +63,10 @@ float hash11(float p) {
     return fract(p);
 }
 
+vec3 hash33(float p) {
+    return vec3(hash11(p), hash11(p + 17.3), hash11(p + 31.7));
+}
+
 float vnoise3(vec3 p) {
     vec3 i = floor(p);
     vec3 f = fract(p);
@@ -98,6 +102,23 @@ vec3 emitter_pos(int channel) {
     return vec3(cos(angle) * radius,
                 sin(float(channel) * 0.91) * 0.25,
                 sin(angle) * radius);
+}
+
+// Phase-17: each channel has a unique deterministic XYZ kick
+// direction. Uses golden-ratio sequencing for the azimuth + a Fibonacci
+// lattice scheme for elevation — known to give very evenly-spaced
+// points on a unit sphere with low pairwise alignment. Critical for
+// the "every channel moves the cluster a different way" feel.
+vec3 channel_kick_dir(int channel) {
+    float i = float(channel);
+    // Fibonacci sphere lattice (Saff & Kuijlaars):
+    //   y = 1 - 2(i + 0.5)/N      — uniformly spaced cosine of latitude
+    //   az = 2π × i × (1/φ²)      — golden-ratio azimuth winds
+    float n = float(N_CHANNELS);
+    float y = 1.0 - 2.0 * (i + 0.5) / n;
+    float r = sqrt(max(1.0 - y * y, 0.0));
+    float az = i * 2.39996323;  // 2π × (1 - 1/φ²) ≈ 2.39996
+    return vec3(r * cos(az), y, r * sin(az));
 }
 
 void main() {
@@ -195,16 +216,20 @@ void main() {
           + vortex_sum   * u_force_vortex
           + noise_force) * u_dt;
 
-    // -------- Onset velocity kick on home channel -------- //
-    // Brief outward push when the home channel transients. Decays
-    // naturally because the onset envelope itself decays.
+    // -------- Phase-17 directional onset kick on home channel -------- //
+    // Each channel has a unique XYZ direction (channel_kick_dir). On
+    // a hot onset, particles in that channel get a velocity boost
+    // along that direction — plus a small per-particle random jitter
+    // so repeated hits don't go in EXACTLY the same direction
+    // (avoids robotic feel; adds individual particle variation
+    // within the cluster's collective surge). The kick is much
+    // larger than the phase-15 radial kick (~3× speed) so transients
+    // genuinely move the cluster, not just shimmer it.
     if (my_onset > ONSET_THRESHOLD) {
-        vec3 home_em = emitter_pos(my_channel);
-        vec3 out_dir = pos - home_em;
-        float ol = length(out_dir);
-        if (ol > 1e-3) {
-            vel += (out_dir / ol) * my_onset * u_speed_scale * 1.5 * u_dt;
-        }
+        vec3 base_dir = channel_kick_dir(my_channel);
+        vec3 jitter = (hash33(seed * 31.7 + u_time * 11.0) - 0.5) * 0.6;
+        vec3 kick = normalize(base_dir + jitter);
+        vel += kick * my_onset * u_speed_scale * 3.0 * u_dt;
     }
 
     // -------- Drag (quadratic-ish) -------- //
