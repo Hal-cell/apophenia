@@ -8,7 +8,7 @@ import time
 import numpy as np
 import pytest
 
-from apophenia.audio.features_fast import (
+from conduit.audio.features_fast import (
     ONSET_FLOOR,
     FastFeatures,
     FeatureBus,
@@ -17,7 +17,7 @@ from apophenia.audio.features_fast import (
     fast_features_loop,
     make_window,
 )
-from apophenia.audio.mock import MockSource
+from conduit.audio.mock import MockSource
 
 # --------------------------------------------------------------------------- #
 # compute_block_features

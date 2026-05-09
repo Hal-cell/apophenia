@@ -1,7 +1,7 @@
 """AudioSource: pluggable input for the rest of the pipeline.
 
 Three implementations, one Protocol. CLI flag `--source <spec>` picks one
-via `parse_source_arg()`. See the vault spec `apophenia/spec/audio-sources.md`
+via `parse_source_arg()`. See the vault spec `conduit/spec/audio-sources.md`
 for full design rationale.
 """
 
@@ -70,19 +70,19 @@ def parse_source_arg(arg: str) -> AudioSource:
 
     if kind == "mock":
         # Lazy import so we don't pull in numpy synthesis until needed.
-        from apophenia.audio.mock import MockSource
+        from conduit.audio.mock import MockSource
         return MockSource(pattern=value or "silence")
 
     if kind == "file":
         if not value:
             raise SourceSpecError("file source requires a path: --source file:<path>")
-        from apophenia.audio.file import FileSource
+        from conduit.audio.file import FileSource
         return FileSource(path=value)
 
     if kind == "device":
         if not value:
             raise SourceSpecError("device source requires a name: --source device:<name>")
-        from apophenia.audio.device import DeviceSource
+        from conduit.audio.device import DeviceSource
         return DeviceSource(device_name=value)
 
     raise SourceSpecError(

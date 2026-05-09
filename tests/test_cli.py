@@ -1,13 +1,13 @@
 """Tests for the CLI's read-only subcommands.
 
-`run` is verified end-to-end via `apophenia run` smoke calls (manual);
+`run` is verified end-to-end via `conduit run` smoke calls (manual);
 we don't unit-test it because it spawns the GLSL window which needs a
 display. `devices` and `smoke` touch real audio hardware so are also
 covered manually.
 
 This module covers the deterministic subcommands:
-  * `apophenia version` — package + dep versions
-  * `apophenia config`  — resolved paths + default audio device
+  * `conduit version` — package + dep versions
+  * `conduit config`  — resolved paths + default audio device
   * `--help`            — lists all public subcommands
 """
 
@@ -15,16 +15,16 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from apophenia.cli import app
+from conduit.cli import app
 
 runner = CliRunner()
 
 
-def test_version_command_runs_and_mentions_apophenia() -> None:
+def test_version_command_runs_and_mentions_conduit() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0, result.stdout
     out = result.stdout.lower()
-    assert "apophenia" in out
+    assert "conduit" in out
     assert "python" in out
 
 
@@ -35,8 +35,8 @@ def test_version_command_lists_key_packages() -> None:
     assert result.exit_code == 0
     out = result.stdout.lower()
     assert "numpy" in out
-    assert "pydantic" in out
-    assert "moderngl" in out
+    assert "fastapi" in out
+    assert "python-osc" in out
 
 
 def test_config_command_runs_clean() -> None:

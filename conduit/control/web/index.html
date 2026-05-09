@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>conduit · audio analysis</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #141414;
+    --border: #222;
+    --text: #c8c8c8;
+    --text-dim: #6a6a6a;
+    --accent: #fbf2d4;
+    --bar-bg: #1c1c1c;
+    --peak-line: #fbf2d4;
+    --good: #5ac95a;
+    --hot: #d8624e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, ui-monospace, Menlo, Consolas, monospace;
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: baseline;
+    flex-wrap: wrap; gap: 12px;
+  }
+  h1 {
+    margin: 0; font-size: 13px; font-weight: 500;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 .dim { color: var(--text-dim); }
+  #status {
+    font-size: 11px; color: var(--text-dim);
+    display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  #status .field { display: flex; gap: 6px; }
+  #status .label { color: var(--text-dim); }
+  #status .value { color: var(--text); }
+  #status .ok { color: var(--good); }
+  #status .err { color: var(--hot); }
+
+  main {
+    flex: 1; padding: 32px 24px;
+    display: flex; flex-direction: column; align-items: center; gap: 24px;
+    max-width: 1400px; width: 100%; margin: 0 auto;
+  }
+  .meters {
+    display: grid;
+    grid-template-columns: repeat(14, 1fr);
+    gap: 8px;
+    width: 100%; min-height: 360px;
+  }
+  .channel {
+    display: flex; flex-direction: column; align-items: stretch;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    min-height: 100%;
+  }
+  .channel .label {
+    text-align: center; padding: 6px 0;
+    font-size: 10px; letter-spacing: 0.1em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+  .channel .meter {
+    flex: 1; position: relative;
+    background: var(--bar-bg);
+    overflow: hidden;
+    min-height: 200px;
+  }
+  .channel .fill {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: hsl(var(--hue, 100), 70%, 45%);
+    transition: height 50ms linear, background 80ms linear;
+  }
+  .channel .peak {
+    position: absolute; left: 0; right: 0;
+    height: 1.5px; background: var(--peak-line);
+    transition: bottom 100ms linear;
+  }
+  .channel .flash {
+    position: absolute; left: 0; right: 0; top: 0;
+    height: 5px;
+    background: #ffffff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+    opacity: 0;
+    transition: opacity 60ms linear;
+    pointer-events: none;
+  }
+  .channel .value, .channel .centroid {
+    text-align: center; padding: 3px 0;
+    font-size: 9px; color: var(--text-dim);
+    border-top: 1px solid var(--border);
+  }
+  .channel .centroid {
+    border-top: none; padding-top: 0; padding-bottom: 5px;
+    color: hsl(var(--hue, 100), 60%, 65%);
+  }
+  .channel.silent .label { color: var(--text-dim); opacity: 0.4; }
+  .channel.silent .meter { opacity: 0.4; }
+
+  #clap-section {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+  }
+  .clap-header {
+    display: flex; justify-content: space-between;
+    font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  #clap-meta { color: var(--text); }
+  #clap-heat {
+    display: grid;
+    grid-template-columns: repeat(32, 1fr);
+    gap: 2px; height: 60px;
+  }
+  #clap-heat .clap-bar {
+    background: var(--bar-bg);
+    border-radius: 1px;
+    align-self: end;
+    transition: height 200ms ease-out, background 200ms ease-out;
+    min-height: 2px;
+  }
+
+  footer {
+    padding: 8px 24px;
+    border-top: 1px solid var(--border);
+    font-size: 10px; color: var(--text-dim);
+    display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  footer code { color: var(--accent); font-family: inherit; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>conduit <span class="dim">· audio analysis</span></h1>
+    <div id="status">
+      <div class="field"><span class="label">ws:</span><span id="ws-state" class="value err">disconnected</span></div>
+      <div class="field"><span class="label">source:</span><span id="src-name" class="value">—</span></div>
+      <div class="field"><span class="label">sr:</span><span id="src-sr" class="value">—</span></div>
+      <div class="field"><span class="label">block:</span><span id="src-block" class="value">—</span></div>
+      <div class="field"><span class="label">blocks:</span><span id="src-count" class="value">0</span></div>
+      <div class="field"><span class="label">ui fps:</span><span id="ui-fps" class="value">0</span></div>
+      <div class="field"><span class="label">clap:</span><span id="clap-state" class="value">off</span></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="meters" id="meters"></div>
+    <section id="clap-section">
+      <div class="clap-header">
+        <span>clap embedding</span>
+        <span id="clap-meta">—</span>
+      </div>
+      <div id="clap-heat"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>level: <code>20·log10(rms)</code> dBFS bar height</span>
+    <span>colour: <code>HSL(centroid)</code> — orange = bass-y, blue = bright</span>
+    <span>top flash: <code>onset envelope</code> per channel</span>
+    <span>clap: 512-dim audio embedding @ ~1Hz, downsampled to 32 bars</span>
+  </footer>
+
+<script>
+(() => {
+  const N = 14;
+  const FLOOR_DB = -60.0;
+  const PEAK_HOLD_MS = 300;
+
+  // Centroid → HSL hue. Linear is good enough for v1; consider log map
+  // (octaves) later. 50Hz → 30° (warm orange), 12kHz → 200° (cool blue).
+  const HUE_LO = 30, HUE_HI = 200;
+  const CENTROID_LO = 50.0, CENTROID_HI = 12000.0;
+
+  const meters = document.getElementById('meters');
+  const cells = [];
+  for (let i = 0; i < N; i++) {
+    const c = document.createElement('div');
+    c.className = 'channel';
+    c.innerHTML = `
+      <div class="label">ch${i + 1}</div>
+      <div class="meter">
+        <div class="flash"></div>
+        <div class="fill"></div>
+        <div class="peak"></div>
+      </div>
+      <div class="value">–∞</div>
+      <div class="centroid">—</div>`;
+    meters.appendChild(c);
+    cells.push({
+      root: c,
+      flash: c.querySelector('.flash'),
+      fill: c.querySelector('.fill'),
+      peak: c.querySelector('.peak'),
+      value: c.querySelector('.value'),
+      centroid: c.querySelector('.centroid'),
+      lastPeakDb: FLOOR_DB,
+      lastPeakAt: 0,
+    });
+  }
+
+  const wsState = document.getElementById('ws-state');
+  const srcName = document.getElementById('src-name');
+  const srcSr = document.getElementById('src-sr');
+  const srcBlock = document.getElementById('src-block');
+  const srcCount = document.getElementById('src-count');
+  const uiFps = document.getElementById('ui-fps');
+  const clapState = document.getElementById('clap-state');
+  const clapMeta = document.getElementById('clap-meta');
+  const clapHeat = document.getElementById('clap-heat');
+
+  // Build 32 CLAP bars (downsampled view of the 512-dim embedding).
+  const CLAP_BARS = 32;
+  const clapCells = [];
+  for (let i = 0; i < CLAP_BARS; i++) {
+    const b = document.createElement('div');
+    b.className = 'clap-bar';
+    b.style.height = '2px';
+    clapHeat.appendChild(b);
+    clapCells.push(b);
+  }
+  let lastClapUpdate = 0;
+
+  function setWsState(text, ok) {
+    wsState.textContent = text;
+    wsState.className = 'value ' + (ok ? 'ok' : 'err');
+  }
+
+  function ampToDb(a) {
+    if (a <= 0) return FLOOR_DB;
+    const db = 20 * Math.log10(a);
+    return db < FLOOR_DB ? FLOOR_DB : db;
+  }
+  function dbToFrac(db) {
+    return Math.max(0, Math.min(1, (db - FLOOR_DB) / (0 - FLOOR_DB)));
+  }
+  function centroidToHue(hz) {
+    if (!hz || hz < CENTROID_LO) return HUE_LO;
+    if (hz > CENTROID_HI) return HUE_HI;
+    const f = (hz - CENTROID_LO) / (CENTROID_HI - CENTROID_LO);
+    return HUE_LO + f * (HUE_HI - HUE_LO);
+  }
+  function fmtCentroid(hz) {
+    if (!hz || hz < 1) return '—';
+    if (hz >= 1000) return (hz / 1000).toFixed(1) + 'k';
+    return hz.toFixed(0);
+  }
+
+  let frameCount = 0;
+  let fpsT0 = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    const fps = (frameCount * 1000) / (now - fpsT0);
+    uiFps.textContent = fps.toFixed(0);
+    frameCount = 0; fpsT0 = now;
+  }, 1000);
+
+  function render(data) {
+    frameCount++;
+    if (data.source_name) srcName.textContent = data.source_name;
+    if (data.sample_rate) srcSr.textContent = data.sample_rate + 'Hz';
+    if (data.block_size) srcBlock.textContent = data.block_size;
+    if (data.block_count != null) srcCount.textContent = data.block_count;
+
+    const rms = data.rms || [];
+    const peak = data.peak || [];
+    const centroid = data.centroid || [];
+    const onsets = data.onset_envelope || [];
+    const now = performance.now();
+
+    for (let i = 0; i < N; i++) {
+      const cell = cells[i];
+      const rmsDb = ampToDb(rms[i] || 0);
+      const peakDb = ampToDb(peak[i] || 0);
+      cell.fill.style.height = (dbToFrac(rmsDb) * 100) + '%';
+
+      const c = centroid[i] || 0;
+      if (c > 0) {
+        cell.root.style.setProperty('--hue', centroidToHue(c));
+        cell.centroid.textContent = fmtCentroid(c);
+      } else {
+        cell.centroid.textContent = '—';
+      }
+
+      if (peakDb > cell.lastPeakDb || (now - cell.lastPeakAt) > PEAK_HOLD_MS) {
+        cell.lastPeakDb = peakDb;
+        cell.lastPeakAt = now;
+      }
+      cell.peak.style.bottom = (dbToFrac(cell.lastPeakDb) * 100) + '%';
+
+      const env = onsets[i] || 0;
+      cell.flash.style.opacity = env;
+
+      cell.value.textContent = rmsDb <= FLOOR_DB ? '–∞' : rmsDb.toFixed(0);
+      cell.root.classList.toggle('silent', (rms[i] || 0) < 1e-5);
+    }
+
+    renderClap(data.slow);
+  }
+
+  function renderClap(slow) {
+    if (!slow || !slow.clap_embedding || slow.clap_embedding.length === 0) {
+      if (slow === null || slow === undefined) {
+        clapState.textContent = 'off';
+        clapState.className = 'value';
+      } else {
+        clapState.textContent = 'warming up…';
+        clapState.className = 'value';
+      }
+      clapMeta.textContent = '—';
+      return;
+    }
+    clapState.textContent = 'active';
+    clapState.className = 'value ok';
+
+    const z = slow.clap_embedding;
+    const binSize = z.length / CLAP_BARS;
+    let maxBin = 0;
+    const bins = new Array(CLAP_BARS).fill(0);
+    for (let i = 0; i < CLAP_BARS; i++) {
+      let s = 0;
+      const start = Math.floor(i * binSize);
+      const end = Math.floor((i + 1) * binSize);
+      for (let j = start; j < end; j++) s += Math.abs(z[j]);
+      bins[i] = s / (end - start);
+      if (bins[i] > maxBin) maxBin = bins[i];
+    }
+    const scale = maxBin > 0 ? 1.0 / maxBin : 1.0;
+    for (let i = 0; i < CLAP_BARS; i++) {
+      const v = bins[i] * scale;
+      const cell = clapCells[i];
+      cell.style.height = (3 + v * 55) + 'px';
+      cell.style.background = `hsl(${30 + (i / CLAP_BARS) * 170}, 60%, ${20 + v * 40}%)`;
+    }
+    lastClapUpdate = slow.update_count;
+    clapMeta.textContent =
+      `update #${slow.update_count} · ${slow.inference_ms.toFixed(0)}ms · ‖z‖=${slow.embedding_norm.toFixed(2)} · ${slow.model_name.split('/').pop()}`;
+  }
+
+  let ws = null;
+  let reconnectTimer = null;
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    setWsState('connecting…', false);
+    ws.onopen = () => setWsState('connected', true);
+    ws.onmessage = (ev) => {
+      try { render(JSON.parse(ev.data)); } catch (e) { console.error('bad message', e); }
+    };
+    ws.onclose = () => {
+      setWsState('disconnected — retry in 1s', false);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 1000);
+    };
+    ws.onerror = () => {
+      setWsState('error', false);
+      try { ws.close(); } catch (_) {}
+    };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>
