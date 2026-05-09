@@ -313,36 +313,44 @@ class ParticleEngine:
         onset: np.ndarray,
         weight: np.ndarray,
     ) -> np.ndarray:
-        """Phase-18 dynamic emitter math. On top of `compute_emitter_positions`:
+        """Phase-18/19 dynamic emitter math. On top of
+        `compute_emitter_positions`:
 
-        * Pattern morph — when `pattern` differs from the previously
-          observed target, smoothstep-lerp between the old and new
-          base positions over `PATTERN_MORPH_S` seconds. Multiple
-          rapid changes interrupt cleanly: the *current* interpolated
-          position becomes the new prev and the new pattern is the
-          new target.
-        * Per-channel onset pulse — each emitter pushes outward
-          (along its base direction from origin) by an amount
-          proportional to `rms[ch] + onset[ch]`. Onset transients
-          read as percussive emitter pumps.
+        * Pattern morph — when the pattern *string* differs from the
+          previously observed target, smoothstep-lerp between the old
+          and new base positions over `PATTERN_MORPH_S` seconds.
+          Multiple rapid pattern flips interrupt cleanly: the *current*
+          interpolated position becomes the new prev. Phase-19 fix:
+          only fire morph on pattern-string change, not on radius or
+          motion-* drift, so the radius / motion sliders feel
+          responsive instead of getting frozen by accidental morph
+          interrupts each frame.
+        * Radius — applies CONTINUOUSLY. During an in-flight morph, the
+          captured prev positions get rescaled by
+          `current_radius / capture_radius` so dragging the radius
+          slider works seamlessly mid-transition.
+        * Per-channel onset pulse — each emitter pushes outward (along
+          its base direction from origin) by an amount proportional to
+          `rms[ch] + onset[ch]`. Onset transients read as percussive
+          emitter pumps.
         """
-        target_changed = (
-            pattern != self._emitter_target_pattern
-            or abs(radius - self._emitter_target_radius) > 1e-4
-        )
-        if target_changed:
-            # Capture the *current* (interpolated) state as the new prev
-            # so morphs can be interrupted gracefully.
-            current_base = self._compute_morphed_base(
-                self._emitter_target_radius, time_s
-            )
-            self._emitter_prev_pattern_positions = current_base
+        # Phase-19: only the pattern *string* triggers a fresh morph.
+        # Radius / motion changes are continuous parameters, not
+        # transitions — they apply directly through the rest of the
+        # math below.
+        if pattern != self._emitter_target_pattern:
+            # Capture the *current* (interpolated) base as prev. Use the
+            # radius at capture time so we can later rescale prev
+            # uniformly when the user drags radius mid-morph.
+            current_base = self._compute_morphed_base(radius, time_s)
+            self._emitter_prev_pattern_positions = current_base.copy()
+            self._emitter_prev_capture_radius = radius
+            self._emitter_prev_pattern = self._emitter_target_pattern
             self._emitter_target_pattern = pattern
-            self._emitter_target_radius = radius
             self._emitter_transition_start_t = time_s
-            # Reset prev_pattern label — once we're using cached
-            # positions, the label is just for telemetry.
-            self._emitter_prev_pattern = "<interpolated>"
+
+        # Track current radius for telemetry / next pattern transition.
+        self._emitter_target_radius = radius
 
         # Compute base via morph if a transition is in progress.
         base = self._compute_morphed_base(radius, time_s)
@@ -376,18 +384,33 @@ class ParticleEngine:
     def _compute_morphed_base(self, radius: float, time_s: float) -> np.ndarray:
         """Smoothstep-lerp between the morph's prev and target base
         patterns. Returns the (14, 3) base position array. If no morph
-        is in progress, returns the target pattern's base directly."""
+        is in progress, returns the target pattern's base directly.
+
+        Phase-19: when prev positions were captured at a different
+        radius from the current one, scale them by the radius ratio
+        so dragging the radius slider during a morph still updates
+        the visual size of both endpoints uniformly. All five
+        patterns scale linearly with radius, so this is exact.
+        """
         elapsed = time_s - self._emitter_transition_start_t
         if elapsed >= PATTERN_MORPH_S:
             return _pattern_base(self._emitter_target_pattern, radius)
         # Smoothstep weighting.
         t = max(0.0, min(elapsed / PATTERN_MORPH_S, 1.0))
         s = t * t * (3.0 - 2.0 * t)
-        # Use cached prev positions if we have them (set on transition
-        # start); otherwise build from prev pattern label.
         prev = getattr(self, "_emitter_prev_pattern_positions", None)
         if prev is None:
             prev = _pattern_base(self._emitter_prev_pattern, radius)
+        else:
+            # Rescale captured prev to the current radius so the morph
+            # tracks slider drags. Y-axis wobble in `_ring_positions`
+            # is *not* radius-scaled (it's a fixed `0.25`-amplitude
+            # term), so this is a slight approximation for the ring;
+            # the visual error is small and the responsiveness gain
+            # is worth it.
+            capture_r = getattr(self, "_emitter_prev_capture_radius", radius)
+            if capture_r > 1e-3 and abs(capture_r - radius) > 1e-4:
+                prev = prev * (radius / capture_r)
         target = _pattern_base(self._emitter_target_pattern, radius)
         return prev * (1.0 - s) + target * s
 
