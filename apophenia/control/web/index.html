@@ -610,9 +610,18 @@
           <input type="range" id="camera-fov_deg" min="20" max="120" step="1" value="60">
           <span class="ctrl-value" id="camera-fov_deg-v">60</span>
         </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">drift</span>
+          <input type="range" id="camera-drift" min="0" max="2" step="0.01" value="0.4">
+          <span class="ctrl-value" id="camera-drift-v">0.40</span>
+        </div>
         <div class="toggle-row">
           <span class="ctrl-label">autorotate</span>
           <div id="camera-autorotate" class="toggle on" role="switch"></div>
+        </div>
+        <div class="toggle-row">
+          <span class="ctrl-label">track centroid</span>
+          <div id="camera-track_centroid" class="toggle on" role="switch"></div>
         </div>
       </section>
     </div>
@@ -768,6 +777,7 @@
     'camera.elevation':         bindSlider('camera-elevation',         'camera.elevation', (v) => v.toFixed(0)),
     'camera.orbit_speed':       bindSlider('camera-orbit_speed',       'camera.orbit_speed'),
     'camera.fov_deg':           bindSlider('camera-fov_deg',           'camera.fov_deg', (v) => v.toFixed(0)),
+    'camera.drift':             bindSlider('camera-drift',             'camera.drift'),
     'force.noise':              bindSlider('force-noise',              'force.noise'),
     'force.vortex':             bindSlider('force-vortex',             'force.vortex'),
     'force.cohesion':           bindSlider('force-cohesion',           'force.cohesion'),
@@ -830,6 +840,7 @@
   }
   const toggleFreeze = bindToggle('transport-freeze', 'transport.freeze');
   const toggleAutorotate = bindToggle('camera-autorotate', 'camera.autorotate');
+  const toggleTrackCentroid = bindToggle('camera-track_centroid', 'camera.track_centroid');
 
   // Kaleidoscope stepper
   const kalVal = document.getElementById('fx-kaleidoscope-v');
@@ -1065,13 +1076,15 @@
     }
     // transport
     if (s.transport) toggleFreeze.set(s.transport.freeze);
-    // camera (phase 12)
+    // camera (phase 12 + phase 17)
     if (s.camera) {
       sliders['camera.distance'].set(s.camera.distance);
       sliders['camera.elevation'].set(s.camera.elevation);
       sliders['camera.orbit_speed'].set(s.camera.orbit_speed);
       sliders['camera.fov_deg'].set(s.camera.fov_deg);
       toggleAutorotate.set(s.camera.autorotate);
+      if (s.camera.drift !== undefined) sliders['camera.drift'].set(s.camera.drift);
+      if (s.camera.track_centroid !== undefined) toggleTrackCentroid.set(s.camera.track_centroid);
     }
     // force (phase 14, phase 16)
     if (s.force) {

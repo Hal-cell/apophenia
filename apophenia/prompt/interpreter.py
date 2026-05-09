@@ -177,6 +177,17 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "spiral":    {"camera": {"autorotate": True, "orbit_speed": 0.15}},
     "gentle":    {"camera": {"autorotate": True, "orbit_speed": 0.03},
                   "motion": {"speed": 0.6}},
+    # Phase-17 camera-motion vocabulary: drift amount + centroid tracking.
+    "wandering": {"camera": {"drift": 1.0, "track_centroid": True}},
+    "restless":  {"camera": {"drift": 1.4, "track_centroid": True},
+                  "mood": {"arousal": 0.5}},
+    "roaming":   {"camera": {"drift": 1.6, "track_centroid": True}},
+    "nomadic":   {"camera": {"drift": 1.8, "autorotate": True,
+                             "orbit_speed": 0.08}},
+    "fixed":     {"camera": {"drift": 0.0, "autorotate": False,
+                             "track_centroid": False}},
+    "framed":    {"camera": {"drift": 0.0, "track_centroid": False}},
+    "tracking":  {"camera": {"track_centroid": True, "drift": 0.3}},
 
     # ---- Audio-reactivity modifiers (phase 13) ---- #
     # These don't write camera params directly — they set `mood.arousal`,

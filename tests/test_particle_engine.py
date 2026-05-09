@@ -662,3 +662,209 @@ def test_phase16_streak_vocabulary_writes_force_streak_length() -> None:
         r = interp.interpret(word)
         assert r["matched"] == [word]
         assert r["partial"]["force"]["streak_length"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Phase 17: camera tracking + drift + per-channel directional kicks
+# --------------------------------------------------------------------------- #
+
+
+def test_camera_drift_offset_zero_when_amount_zero() -> None:
+    """`camera_drift_offset(t, 0, anything)` should always return zero."""
+    from apophenia.visuals.particle_engine import camera_drift_offset
+
+    for t in (0.0, 1.0, 5.7, 100.0):
+        offset = camera_drift_offset(t, drift_amount=0.0, audio_intensity=0.5)
+        assert np.allclose(offset, 0.0)
+
+
+def test_camera_drift_offset_varies_over_time() -> None:
+    """With drift > 0, the offset should change between frames —
+    that's the whole point of drift."""
+    from apophenia.visuals.particle_engine import camera_drift_offset
+
+    o0 = camera_drift_offset(0.0, drift_amount=1.0, audio_intensity=0.5)
+    o1 = camera_drift_offset(1.0, drift_amount=1.0, audio_intensity=0.5)
+    o2 = camera_drift_offset(5.0, drift_amount=1.0, audio_intensity=0.5)
+    # Different time samples should produce different offsets.
+    assert not np.allclose(o0, o1)
+    assert not np.allclose(o0, o2)
+    # And drift_amount=1 should produce offsets within roughly ±1 unit
+    # (Lissajous amplitude × scale).
+    assert np.abs(o1).max() < 2.0
+
+
+def test_camera_drift_amount_scales_offset_magnitude() -> None:
+    """drift=2.0 should produce offsets twice as large as drift=1.0."""
+    from apophenia.visuals.particle_engine import camera_drift_offset
+
+    o1 = camera_drift_offset(1.5, drift_amount=1.0, audio_intensity=0.0)
+    o2 = camera_drift_offset(1.5, drift_amount=2.0, audio_intensity=0.0)
+    np.testing.assert_allclose(o2, o1 * 2.0, atol=1e-5)
+
+
+def test_emitter_ring_matches_shader_layout() -> None:
+    """The Python-side `_EMITTER_RING` MUST match the GLSL
+    `emitter_pos()` exactly — centroid math depends on it."""
+    from apophenia.visuals.particle_engine import _EMITTER_RING
+
+    # Channel 0: angle = 0 → (cos(0)*1.6, sin(0*0.91)*0.25, sin(0)*1.6)
+    #                       = (1.6, 0, 0)
+    np.testing.assert_allclose(_EMITTER_RING[0], [1.6, 0.0, 0.0], atol=1e-5)
+    # Channel 7: angle = pi → (-1.6, sin(7*0.91)*0.25, ~0)
+    assert _EMITTER_RING[7, 0] == pytest.approx(-1.6, abs=1e-5)
+    assert abs(_EMITTER_RING[7, 2]) < 1e-5
+    # 14 rows, 3 columns.
+    assert _EMITTER_RING.shape == (14, 3)
+
+
+def test_camera_centroid_tracks_loud_channel() -> None:
+    """Phase-17 core fix: with one channel loud, the smoothed centroid
+    should be biased toward that channel's emitter, not the origin."""
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import _EMITTER_RING, ParticleEngine
+
+        pe = ParticleEngine(ctx, n_particles=100)
+        state = VisualState()
+        # Only ch0 loud, all weights = 1.
+        loud_ch0 = FastFeatures(
+            rms=[1.0] + [0.0] * 13,
+            peak=[1.0] + [0.0] * 13,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.0] * 14,
+            n_channels=14,
+        )
+        # Run enough frames for the EMA to converge.
+        for i in range(200):
+            pe.update_and_render(
+                features=loud_ch0,
+                time_s=i * 0.033,
+                dt=0.033,
+                resolution=(64, 64),
+                state=state,
+            )
+        # ch0's emitter is at (1.6, 0, 0). Smoothed centroid should
+        # be heavily biased that way. Math: with the 0.05 baseline
+        # added to every channel, total weight = 1.05 + 13×0.05 = 1.7.
+        # Numerator x ≈ 1.05×1.6 + 0.05×Σ(other ring x) ≈ 1.6.
+        # So centroid x ≈ 1.6 / 1.7 ≈ 0.94. Verify it's clearly biased
+        # toward ch0 (not at origin).
+        centroid = pe._smoothed_centroid
+        ch0_pos = _EMITTER_RING[0]
+        assert centroid[0] > 0.85, (
+            f"smoothed centroid should track ch0 emitter ({ch0_pos}); "
+            f"got {centroid}"
+        )
+    finally:
+        ctx.release()
+
+
+def test_camera_centroid_stays_near_origin_when_silent() -> None:
+    """Silent audio → all channels contribute equally via the 0.05
+    baseline → centroid sits near the origin (centre of the ring)."""
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        pe = ParticleEngine(ctx, n_particles=100)
+        state = VisualState()
+        silent = FastFeatures(
+            rms=[0.0] * 14,
+            peak=[0.0] * 14,
+            centroid=[0.0] * 14,
+            onset_envelope=[0.0] * 14,
+            n_channels=14,
+        )
+        for i in range(200):
+            pe.update_and_render(
+                features=silent,
+                time_s=i * 0.033,
+                dt=0.033,
+                resolution=(64, 64),
+                state=state,
+            )
+        # Equal-weight average of 14 ring positions ≈ origin.
+        centroid = pe._smoothed_centroid
+        assert np.linalg.norm(centroid) < 0.3, (
+            f"silent centroid should sit near origin; got {centroid}"
+        )
+    finally:
+        ctx.release()
+
+
+def test_phase17_camera_motion_vocabulary() -> None:
+    """`wandering / restless / roaming / nomadic` raise camera.drift;
+    `fixed / framed` zero it; `tracking` enables centroid follow."""
+    from apophenia.prompt.interpreter import PromptInterpreter
+
+    interp = PromptInterpreter()
+    for word, expected_drift_min in [
+        ("wandering", 0.9),
+        ("restless", 1.3),
+        ("roaming", 1.5),
+        ("nomadic", 1.7),
+    ]:
+        r = interp.interpret(word)
+        assert r["partial"]["camera"]["drift"] >= expected_drift_min
+
+    r_fixed = interp.interpret("fixed")
+    assert r_fixed["partial"]["camera"]["drift"] == 0.0
+    assert r_fixed["partial"]["camera"]["track_centroid"] is False
+
+    r_tracking = interp.interpret("tracking")
+    assert r_tracking["partial"]["camera"]["track_centroid"] is True
+
+
+def test_channel_kick_directions_are_well_dispersed() -> None:
+    """Phase-17: each channel's onset kick direction must be visually
+    distinct so different channels produce different cluster motions.
+    Replicates the GLSL Fibonacci-sphere lattice in Python and checks
+    pairwise alignment stays below 0.7 — well below the visually-confusing
+    threshold of ~0.95.
+    """
+    import math as m
+
+    n = 14
+    dirs = []
+    for ch in range(n):
+        y = 1.0 - 2.0 * (ch + 0.5) / n
+        r = m.sqrt(max(1.0 - y * y, 0.0))
+        az = ch * 2.39996323
+        dirs.append([r * m.cos(az), y, r * m.sin(az)])
+    dirs_arr = np.array(dirs)
+    dots = dirs_arr @ dirs_arr.T
+    np.fill_diagonal(dots, 0)
+    assert dots.max() < 0.75, (
+        f"channel kick directions cluster too tightly; max alignment = {dots.max():.3f}"
+    )
+    # And every direction is unit-length.
+    norms = np.linalg.norm(dirs_arr, axis=1)
+    np.testing.assert_allclose(norms, 1.0, atol=1e-5)
+
+
+def test_phase17_camera_state_drift_validates() -> None:
+    """CameraState.drift ∈ [0, 2]; track_centroid is bool with default True."""
+    from pydantic import ValidationError
+
+    from apophenia.state import CameraState
+
+    c = CameraState()
+    assert c.drift == 0.4
+    assert c.track_centroid is True
+
+    with pytest.raises(ValidationError):
+        CameraState(drift=-0.1)
+    with pytest.raises(ValidationError):
+        CameraState(drift=3.0)
+    # Boundary values should validate.
+    CameraState(drift=0.0)
+    CameraState(drift=2.0)

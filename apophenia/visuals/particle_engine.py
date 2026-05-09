@@ -85,15 +85,53 @@ def look_at_matrix(eye: tuple[float, float, float],
 
 
 def camera_eye(distance: float, elevation_deg: float, azimuth_rad: float) -> tuple[float, float, float]:
-    """Spherical → Cartesian. Camera orbits around (0, 0, 0).
-    `azimuth_rad` is the angle in the XZ plane (around Y); 0 looks
-    down the +Z axis."""
+    """Spherical → Cartesian. Camera orbits around the origin (the
+    caller can offset to orbit around a moving target by adding the
+    target after this call). `azimuth_rad` is the angle in the XZ
+    plane (around Y); 0 looks down the +Z axis."""
     elev = math.radians(elevation_deg)
     return (
         distance * math.cos(elev) * math.sin(azimuth_rad),
         distance * math.sin(elev),
         distance * math.cos(elev) * math.cos(azimuth_rad),
     )
+
+
+# 14 emitter positions on the ring — must match `emitter_pos()` in
+# particle_update.vert. Computed once at module load so every frame's
+# centroid math doesn't redo the trig.
+def _emitter_ring(n_channels: int = 14, radius: float = 1.6) -> np.ndarray:
+    angles = np.arange(n_channels, dtype=np.float32) / n_channels * (2 * np.pi)
+    return np.stack([
+        np.cos(angles) * radius,
+        np.sin(np.arange(n_channels, dtype=np.float32) * 0.91) * 0.25,
+        np.sin(angles) * radius,
+    ], axis=1)
+
+
+_EMITTER_RING = _emitter_ring()
+
+
+def camera_drift_offset(time_s: float, drift_amount: float, audio_intensity: float) -> np.ndarray:
+    """Phase-17: organic Lissajous + audio-modulated camera-position
+    drift. Returned as a (3,) float32 offset to add to the orbit eye.
+
+    Three independent trig oscillators keep X/Y/Z motion uncorrelated;
+    the audio-pulse term gives a subtle radial breathing in time with
+    loud sections without being directional.
+    """
+    if drift_amount <= 0.0:
+        return np.zeros(3, dtype=np.float32)
+    # Base Lissajous, irregular periods so motion never repeats.
+    lissa = np.array([
+        math.sin(time_s * 0.13) + math.cos(time_s * 0.07) * 0.6,
+        math.sin(time_s * 0.09) * 0.4 + math.cos(time_s * 0.21) * 0.2,
+        math.cos(time_s * 0.11) - math.sin(time_s * 0.05) * 0.6,
+    ], dtype=np.float32)
+    # Audio pulse — a small directional pump that breathes with the mix.
+    pulse = math.sin(time_s * 1.7) * audio_intensity * 0.4
+    return (lissa + np.array([pulse, pulse * 0.3, -pulse * 0.7], dtype=np.float32)) \
+           * drift_amount * 0.5
 
 
 # --------------------------------------------------------------------------- #
@@ -168,6 +206,15 @@ class ParticleEngine:
             )
             for buf in self._buffers
         ]
+
+        # Phase-17: smoothed audio-weighted centroid the camera tracks.
+        # Initialised at the world origin so the first frame doesn't
+        # snap to a wild target.
+        self._smoothed_centroid = np.zeros(3, dtype=np.float32)
+        # EMA alpha for centroid tracking. ~0.04 ≈ half-second at 60fps;
+        # slow enough that the camera doesn't jitter on every onset,
+        # fast enough that it follows sustained activity in <1 sec.
+        self._centroid_alpha = 0.04
 
     # ------------------------------------------------------------------ #
     # Init
@@ -293,22 +340,54 @@ class ParticleEngine:
         )
         self._read_idx = write_idx
 
-        # ---- Render pass ---- #
-        # Camera matrix. Phase-13: mood + audio modulate the orbit
-        # speed and elevation at runtime — `mood.arousal` boosts orbit
-        # rate in proportion to audio_intensity (so the camera "leans
-        # into" loud sections), and the per-frame onset average gives
-        # a small upward elevation kick (mild camera-shake on hits).
+        # ---- Camera ---- #
         cam = state.camera
+
+        # Phase-17 centroid tracking: target the camera looks at is the
+        # audio-weighted average of emitter positions, smoothed across
+        # frames so the camera doesn't snap on every onset. Each
+        # channel's emitter contributes proportional to its activity
+        # (RMS + onset, gated by channel weight), with a small baseline
+        # so silent audio gives a stable origin-ish target.
+        if cam.track_centroid:
+            audio_w = (rms + onset * 0.5) * weight + 0.05
+            total_w = float(audio_w.sum())
+            if total_w > 1e-3:
+                raw_centroid = (
+                    _EMITTER_RING.T * audio_w[None, :]
+                ).sum(axis=1) / total_w
+            else:
+                raw_centroid = np.zeros(3, dtype=np.float32)
+            self._smoothed_centroid += (
+                raw_centroid - self._smoothed_centroid
+            ) * self._centroid_alpha
+            target = self._smoothed_centroid
+        else:
+            target = np.zeros(3, dtype=np.float32)
+
+        # Phase-13 audio coupling on orbit / elevation kept.
         arousal = float(state.mood.arousal)
         eff_orbit = cam.orbit_speed * (1.0 + 0.6 * arousal * audio_intensity)
         eff_elevation = cam.elevation + onset_avg * 4.0 * max(arousal, 0.0)
         azimuth = (time_s * eff_orbit * 6.2831853) if cam.autorotate else 0.0
-        eye = camera_eye(cam.distance, eff_elevation, azimuth)
-        view = look_at_matrix(eye, (0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
+        # Orbit position is now an OFFSET from the target (not absolute).
+        orbit_eye = np.array(
+            camera_eye(cam.distance, eff_elevation, azimuth),
+            dtype=np.float32,
+        )
+        # Phase-17: organic Lissajous + audio-pulse drift on top.
+        drift = camera_drift_offset(time_s, float(cam.drift), audio_intensity)
+        eye_world = target + orbit_eye + drift
+
+        view = look_at_matrix(
+            tuple(eye_world.tolist()),
+            tuple(target.tolist()),
+            (0.0, 1.0, 0.0),
+        )
         aspect = max(resolution[0] / max(resolution[1], 1), 0.01)
         proj = perspective_matrix(cam.fov_deg, aspect, near=0.1, far=50.0)
-        mvp = proj @ view  # column-major × column-major
+        mvp = proj @ view
 
         # Additive blending — bright particles glow brighter where they
         # overlap. Disable depth write so transparent edges don't

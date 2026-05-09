@@ -152,6 +152,21 @@ class CameraState(BaseModel):
     the camera holds at the orbit angle from the most recent `time` it
     saw — i.e. freezes in place."""
 
+    drift: float = Field(0.4, ge=0.0, le=2.0)
+    """Phase-17: organic camera-position drift on top of the orbit.
+    The camera eye gets a Lissajous offset (with audio-pulse component)
+    of approximately `drift × 0.5` units. 0 = pure orbit at fixed
+    distance/elevation; 2 = roaming nomadic camera that moves around
+    the scene like it's hand-held. Default 0.4 gives a subtle
+    breathing motion."""
+
+    track_centroid: bool = True
+    """Phase-17: when True, the camera continuously points at the
+    audio-weighted centroid of particle activity (smoothed via EMA),
+    so the camera follows where the music is happening. When False,
+    the camera looks at the world origin — useful for static framing
+    or when the user wants to see the full ring layout."""
+
 
 N_CHANNELS = 14
 
