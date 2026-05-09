@@ -47,16 +47,12 @@ generates 14 synthetic channels for development.
 ## Install
 
 ```bash
-git clone https://github.com/Hal-cell/apophenia
-cd apophenia
+git clone https://github.com/Hal-cell/synapse
+cd synapse
 uv sync                # base install
 uv sync --extra clap   # + CLAP slow tier (~600MB on first run)
 uv sync --extra dev    # + tests / linting
 ```
-
-Note: the GitHub repo is still named `apophenia` from the previous
-phase. The Python package is `synapse` (this is what you `import`
-and what the CLI command is).
 
 ## Quick start
 

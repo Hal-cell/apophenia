@@ -39,7 +39,7 @@ The status row at the top shows:
 
 1. **Start synapse** (in your repo):
    ```bash
-   cd /path/to/apophenia    # the repo dir, not the vault
+   cd /path/to/synapse    # the repo dir, not the vault
    uv run synapse run --source mock:drums --no-clap \
        --gate "1,2" --cv "3-6"
    ```

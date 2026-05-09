@@ -6,7 +6,7 @@ SlowBus thread-safety, slow_features_loop wiring through a stub
 encoder — and leave the real-model run to manual smoke tests.
 
 A `@pytest.mark.skipif` test calling the real `ClapEncoder.load()` is
-included for completeness but skipped unless `APOPHENIA_RUN_CLAP=1` is
+included for completeness but skipped unless `SYNAPSE_RUN_CLAP=1` is
 set in the environment.
 """
 
@@ -228,12 +228,12 @@ def test_slow_loop_waits_for_buffer_to_fill() -> None:
 
 
 @pytest.mark.skipif(
-    os.environ.get("APOPHENIA_RUN_CLAP") != "1",
-    reason="set APOPHENIA_RUN_CLAP=1 to run the real CLAP model (downloads ~600MB)",
+    os.environ.get("SYNAPSE_RUN_CLAP") != "1",
+    reason="set SYNAPSE_RUN_CLAP=1 to run the real CLAP model (downloads ~600MB)",
 )
 def test_real_clap_encoder_loads_and_encodes() -> None:
     """Sanity check the actual HuggingFace CLAP can load + run on this
-    machine. Skipped by default; opt in with APOPHENIA_RUN_CLAP=1.
+    machine. Skipped by default; opt in with SYNAPSE_RUN_CLAP=1.
     """
     from synapse.audio.features_slow import ClapEncoder
 

@@ -1,11 +1,11 @@
 """Quick check that ES-9 (or any 14-channel device) is visible to Core Audio.
 
-Phase 1.5 helper. Stub for now — runs `apophenia devices` essentially.
+Phase 1.5 helper. Stub for now — runs `synapse devices` essentially.
 """
 
 from __future__ import annotations
 
-from apophenia.audio.device import list_devices
+from synapse.audio.device import list_devices
 
 
 def main() -> None:

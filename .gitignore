@@ -37,7 +37,7 @@ uv.lock
 # Local data
 .env
 .env.local
-~/.config/apophenia/   # this lives outside but just in case
+~/.config/synapse/   # this lives outside but just in case
 bench-results.json
 *.log
 
