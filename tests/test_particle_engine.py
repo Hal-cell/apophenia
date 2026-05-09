@@ -665,407 +665,125 @@ def test_phase16_streak_vocabulary_writes_force_streak_length() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Phase 17: camera tracking + drift + per-channel directional kicks
+# Phase 17: emitter patterns
 # --------------------------------------------------------------------------- #
 
 
-def test_camera_drift_offset_zero_when_amount_zero() -> None:
-    """`camera_drift_offset(t, 0, anything)` should always return zero."""
-    from apophenia.visuals.particle_engine import camera_drift_offset
+def test_compute_emitter_positions_ring_default() -> None:
+    """Default ring pattern with motion_amp=0 should match the original
+    phase-12/15 hardcoded positions exactly (radius 1.6, slight Y wobble)."""
+    from apophenia.visuals.particle_engine import compute_emitter_positions
 
-    for t in (0.0, 1.0, 5.7, 100.0):
-        offset = camera_drift_offset(t, drift_amount=0.0, audio_intensity=0.5)
-        assert np.allclose(offset, 0.0)
-
-
-def test_camera_drift_offset_varies_over_time() -> None:
-    """With drift > 0, the offset should change between frames —
-    that's the whole point of drift."""
-    from apophenia.visuals.particle_engine import camera_drift_offset
-
-    o0 = camera_drift_offset(0.0, drift_amount=1.0, audio_intensity=0.5)
-    o1 = camera_drift_offset(1.0, drift_amount=1.0, audio_intensity=0.5)
-    o2 = camera_drift_offset(5.0, drift_amount=1.0, audio_intensity=0.5)
-    # Different time samples should produce different offsets.
-    assert not np.allclose(o0, o1)
-    assert not np.allclose(o0, o2)
-    # And drift_amount=1 should produce offsets within roughly ±1 unit
-    # (Lissajous amplitude × scale).
-    assert np.abs(o1).max() < 2.0
-
-
-def test_camera_drift_amount_scales_offset_magnitude() -> None:
-    """drift=2.0 should produce offsets twice as large as drift=1.0."""
-    from apophenia.visuals.particle_engine import camera_drift_offset
-
-    o1 = camera_drift_offset(1.5, drift_amount=1.0, audio_intensity=0.0)
-    o2 = camera_drift_offset(1.5, drift_amount=2.0, audio_intensity=0.0)
-    np.testing.assert_allclose(o2, o1 * 2.0, atol=1e-5)
-
-
-def test_emitter_ring_matches_shader_layout() -> None:
-    """The Python-side `_EMITTER_RING` MUST match the GLSL
-    `emitter_pos()` exactly — centroid math depends on it."""
-    from apophenia.visuals.particle_engine import _EMITTER_RING
-
-    # Channel 0: angle = 0 → (cos(0)*1.6, sin(0*0.91)*0.25, sin(0)*1.6)
-    #                       = (1.6, 0, 0)
-    np.testing.assert_allclose(_EMITTER_RING[0], [1.6, 0.0, 0.0], atol=1e-5)
-    # Channel 7: angle = pi → (-1.6, sin(7*0.91)*0.25, ~0)
-    assert _EMITTER_RING[7, 0] == pytest.approx(-1.6, abs=1e-5)
-    assert abs(_EMITTER_RING[7, 2]) < 1e-5
-    # 14 rows, 3 columns.
-    assert _EMITTER_RING.shape == (14, 3)
-
-
-def test_camera_centroid_tracks_loud_channel() -> None:
-    """Phase-17 core fix: with one channel loud, the smoothed centroid
-    should be biased toward that channel's emitter, not the origin."""
-    ctx = _try_make_ctx()
-    if ctx is None:
-        pytest.skip("no GL context available")
-    try:
-        from apophenia.audio.features_fast import FastFeatures
-        from apophenia.state import VisualState
-        from apophenia.visuals.particle_engine import _EMITTER_RING, ParticleEngine
-
-        pe = ParticleEngine(ctx, n_particles=100)
-        state = VisualState()
-        # Only ch0 loud, all weights = 1.
-        loud_ch0 = FastFeatures(
-            rms=[1.0] + [0.0] * 13,
-            peak=[1.0] + [0.0] * 13,
-            centroid=[1500.0] * 14,
-            onset_envelope=[0.0] * 14,
-            n_channels=14,
-        )
-        # Run enough frames for the EMA to converge.
-        for i in range(200):
-            pe.update_and_render(
-                features=loud_ch0,
-                time_s=i * 0.033,
-                dt=0.033,
-                resolution=(64, 64),
-                state=state,
-            )
-        # ch0's emitter is at (1.6, 0, 0). Smoothed centroid should
-        # be heavily biased that way. Math: with the 0.05 baseline
-        # added to every channel, total weight = 1.05 + 13×0.05 = 1.7.
-        # Numerator x ≈ 1.05×1.6 + 0.05×Σ(other ring x) ≈ 1.6.
-        # So centroid x ≈ 1.6 / 1.7 ≈ 0.94. Verify it's clearly biased
-        # toward ch0 (not at origin).
-        centroid = pe._smoothed_centroid
-        ch0_pos = _EMITTER_RING[0]
-        assert centroid[0] > 0.85, (
-            f"smoothed centroid should track ch0 emitter ({ch0_pos}); "
-            f"got {centroid}"
-        )
-    finally:
-        ctx.release()
-
-
-def test_camera_centroid_stays_near_origin_when_silent() -> None:
-    """Silent audio → all channels contribute equally via the 0.05
-    baseline → centroid sits near the origin (centre of the ring)."""
-    ctx = _try_make_ctx()
-    if ctx is None:
-        pytest.skip("no GL context available")
-    try:
-        from apophenia.audio.features_fast import FastFeatures
-        from apophenia.state import VisualState
-        from apophenia.visuals.particle_engine import ParticleEngine
-
-        pe = ParticleEngine(ctx, n_particles=100)
-        state = VisualState()
-        silent = FastFeatures(
-            rms=[0.0] * 14,
-            peak=[0.0] * 14,
-            centroid=[0.0] * 14,
-            onset_envelope=[0.0] * 14,
-            n_channels=14,
-        )
-        for i in range(200):
-            pe.update_and_render(
-                features=silent,
-                time_s=i * 0.033,
-                dt=0.033,
-                resolution=(64, 64),
-                state=state,
-            )
-        # Equal-weight average of 14 ring positions ≈ origin.
-        centroid = pe._smoothed_centroid
-        assert np.linalg.norm(centroid) < 0.3, (
-            f"silent centroid should sit near origin; got {centroid}"
-        )
-    finally:
-        ctx.release()
-
-
-def test_phase17_camera_motion_vocabulary() -> None:
-    """`wandering / restless / roaming / nomadic` raise camera.drift;
-    `fixed / framed` zero it; `tracking` enables centroid follow."""
-    from apophenia.prompt.interpreter import PromptInterpreter
-
-    interp = PromptInterpreter()
-    for word, expected_drift_min in [
-        ("wandering", 0.9),
-        ("restless", 1.3),
-        ("roaming", 1.5),
-        ("nomadic", 1.7),
-    ]:
-        r = interp.interpret(word)
-        assert r["partial"]["camera"]["drift"] >= expected_drift_min
-
-    r_fixed = interp.interpret("fixed")
-    assert r_fixed["partial"]["camera"]["drift"] == 0.0
-    assert r_fixed["partial"]["camera"]["track_centroid"] is False
-
-    r_tracking = interp.interpret("tracking")
-    assert r_tracking["partial"]["camera"]["track_centroid"] is True
-
-
-def test_channel_kick_directions_are_well_dispersed() -> None:
-    """Phase-17: each channel's onset kick direction must be visually
-    distinct so different channels produce different cluster motions.
-    Replicates the GLSL Fibonacci-sphere lattice in Python and checks
-    pairwise alignment stays below 0.7 — well below the visually-confusing
-    threshold of ~0.95.
-    """
-    import math as m
-
-    n = 14
-    dirs = []
-    for ch in range(n):
-        y = 1.0 - 2.0 * (ch + 0.5) / n
-        r = m.sqrt(max(1.0 - y * y, 0.0))
-        az = ch * 2.39996323
-        dirs.append([r * m.cos(az), y, r * m.sin(az)])
-    dirs_arr = np.array(dirs)
-    dots = dirs_arr @ dirs_arr.T
-    np.fill_diagonal(dots, 0)
-    assert dots.max() < 0.75, (
-        f"channel kick directions cluster too tightly; max alignment = {dots.max():.3f}"
+    pos = compute_emitter_positions(
+        pattern="ring", radius=1.6, motion_amp=0.0,
+        motion_speed=0.0, time_s=0.0,
     )
-    # And every direction is unit-length.
-    norms = np.linalg.norm(dirs_arr, axis=1)
-    np.testing.assert_allclose(norms, 1.0, atol=1e-5)
+    assert pos.shape == (14, 3)
+    assert pos.dtype == np.float32
+    # Check ch0 sits at (1.6, sin(0)*0.25=0, 0).
+    assert pos[0, 0] == pytest.approx(1.6, rel=1e-4)
+    assert pos[0, 1] == pytest.approx(0.0, abs=1e-4)
+    assert pos[0, 2] == pytest.approx(0.0, abs=1e-4)
+    # ch7 is opposite ch0 — at (-1.6, _, very small).
+    assert pos[7, 0] == pytest.approx(-1.6, rel=1e-3)
 
 
-# --------------------------------------------------------------------------- #
-# Phase 18: fluid dynamics
-# --------------------------------------------------------------------------- #
+def test_compute_emitter_positions_each_pattern_distinct() -> None:
+    """The 5 patterns should produce distinct geometries."""
+    from apophenia.visuals.particle_engine import compute_emitter_positions
+
+    patterns = ["ring", "grid", "line", "sphere", "lissajous"]
+    positions = {
+        p: compute_emitter_positions(p, 1.6, 0.0, 0.0, 0.0)
+        for p in patterns
+    }
+    # All shapes valid.
+    for p, pos in positions.items():
+        assert pos.shape == (14, 3), f"{p}: got {pos.shape}"
+    # Pairwise: at least one coordinate differs by > 0.1 between patterns.
+    pairs = [
+        ("ring", "grid"),
+        ("ring", "line"),
+        ("ring", "sphere"),
+        ("ring", "lissajous"),
+        ("grid", "sphere"),
+    ]
+    for a, b in pairs:
+        diff = np.abs(positions[a] - positions[b]).max()
+        assert diff > 0.1, f"patterns {a} and {b} look identical (max diff {diff})"
 
 
-def test_phase18_particles_stay_contained_under_long_simulation() -> None:
-    """Phase-18 fix for "particles drift far away over time": with the
-    soft world bound (r=4 restoring force) + hard reset (r>5 → snap
-    home), particles should stay within a moderate scene radius even
-    after hundreds of frames of varied audio.
-    """
-    ctx = _try_make_ctx()
-    if ctx is None:
-        pytest.skip("no GL context available")
-    try:
-        from apophenia.audio.features_fast import FastFeatures
-        from apophenia.state import VisualState
-        from apophenia.visuals.particle_engine import ParticleEngine
+def test_compute_emitter_positions_motion_advances_with_time() -> None:
+    """With motion_amp > 0, the emitter position changes over time."""
+    from apophenia.visuals.particle_engine import compute_emitter_positions
 
-        # Loud, onset-heavy audio that would push particles far in the
-        # phase-15/-17 model.
-        features = FastFeatures(
-            rms=[0.8] * 14,
-            peak=[0.9] * 14,
-            centroid=[1500.0] * 14,
-            onset_envelope=[0.7] * 14,
-            n_channels=14,
-        )
-        state = VisualState()
+    p_t0 = compute_emitter_positions("ring", 1.6, motion_amp=0.5,
+                                      motion_speed=1.0, time_s=0.0)
+    p_t1 = compute_emitter_positions("ring", 1.6, motion_amp=0.5,
+                                      motion_speed=1.0, time_s=1.0)
+    diff = np.abs(p_t0 - p_t1).max()
+    # Drift over 1s at motion_speed=1 should produce O(0.1) movement.
+    assert diff > 0.05, f"motion_amp>0 should change positions over time; got diff {diff}"
 
-        pe = ParticleEngine(ctx, n_particles=2000)
-        # 300 frames ≈ 10 seconds at 30fps simulation step.
-        for i in range(300):
-            pe.update_and_render(
-                features=features,
-                time_s=i * 0.033,
-                dt=0.033,
-                resolution=(64, 64),
-                state=state,
-            )
-
-        buf = np.frombuffer(
-            pe._buffers[pe._read_idx].read(), dtype=np.float32
-        ).reshape(-1, 8)
-        radii = np.linalg.norm(buf[:, 0:3], axis=1)
-        # Hard reset triggers at r=5; allow tiny epsilon for in-flight
-        # particles between reset frames.
-        assert radii.max() < 5.5, (
-            f"phase-18 containment broke: max particle radius = "
-            f"{radii.max():.2f}"
-        )
-        # The cluster should still have meaningful radial extent —
-        # particles haven't all collapsed onto the emitter ring
-        # (mean radius near 1.6 is the ring; "collapsed" would be
-        # mean ≈ 0 with very low std). Use mean as the no-collapse
-        # signal.
-        assert radii.mean() > 0.8, (
-            f"phase-18 anti-collapse broke: mean radius = "
-            f"{radii.mean():.3f}; particles are piling at origin"
-        )
-    finally:
-        ctx.release()
+    # motion_amp=0 should keep positions perfectly static.
+    p_static_t0 = compute_emitter_positions("ring", 1.6, 0.0, 1.0, 0.0)
+    p_static_t10 = compute_emitter_positions("ring", 1.6, 0.0, 1.0, 10.0)
+    np.testing.assert_array_equal(p_static_t0, p_static_t10)
 
 
-def test_phase18_no_centroid_collapse_under_dense_audio() -> None:
-    """Phase-18 fix for "particles eventually collapse to a point":
-    under multi-channel-loud audio, the multi-emitter pull used to
-    drag every particle to the centroid (origin). With the secondary
-    pull lowered to 0.08, particles should stay distributed across
-    their home territories.
+def test_compute_emitter_positions_radius_scales_uniformly() -> None:
+    """Doubling radius should roughly double all distances from origin."""
+    from apophenia.visuals.particle_engine import compute_emitter_positions
 
-    Test: after long simulation under dense audio, the std of particle
-    positions should be > 1.0 — meaning particles are spread out, not
-    piled at origin.
-    """
-    ctx = _try_make_ctx()
-    if ctx is None:
-        pytest.skip("no GL context available")
-    try:
-        from apophenia.audio.features_fast import FastFeatures
-        from apophenia.state import VisualState
-        from apophenia.visuals.particle_engine import ParticleEngine
-
-        # All channels equally loud — the worst case for centroid
-        # collapse since every emitter pulls every particle.
-        features = FastFeatures(
-            rms=[0.5] * 14,
-            peak=[0.6] * 14,
-            centroid=[1500.0] * 14,
-            onset_envelope=[0.0] * 14,
-            n_channels=14,
-        )
-        state = VisualState()
-
-        pe = ParticleEngine(ctx, n_particles=2000)
-        for i in range(400):
-            pe.update_and_render(
-                features=features,
-                time_s=i * 0.033,
-                dt=0.033,
-                resolution=(64, 64),
-                state=state,
-            )
-
-        buf = np.frombuffer(
-            pe._buffers[pe._read_idx].read(), dtype=np.float32
-        ).reshape(-1, 8)
-        # Spread metric: XZ-plane spread (the emitter ring lies in XZ;
-        # Y intentionally has a tiny wobble so its variance is small
-        # by design). If particles have collapsed to centroid, BOTH
-        # X and Z spread would be near zero.
-        x_std = buf[:, 0].std()
-        z_std = buf[:, 2].std()
-        assert x_std > 0.5 and z_std > 0.5, (
-            f"phase-18 anti-collapse broke under dense audio: "
-            f"X std={x_std:.3f}, Z std={z_std:.3f}"
-        )
-        # And the mean distance from origin in XZ stays above the
-        # collapse threshold.
-        xz_dist = np.sqrt(buf[:, 0] ** 2 + buf[:, 2] ** 2)
-        assert xz_dist.mean() > 0.8, (
-            f"phase-18 anti-collapse broke: mean XZ distance = "
-            f"{xz_dist.mean():.3f}"
-        )
-    finally:
-        ctx.release()
+    p_small = compute_emitter_positions("ring", 1.0, 0.0, 0.0, 0.0)
+    p_big = compute_emitter_positions("ring", 2.0, 0.0, 0.0, 0.0)
+    # X+Z distances scale by 2; Y wobble is independent of radius
+    # (it's a fixed `sin(channel * 0.91) * 0.25`), so just check XZ.
+    rad_small = np.linalg.norm(p_small[:, [0, 2]], axis=1).mean()
+    rad_big = np.linalg.norm(p_big[:, [0, 2]], axis=1).mean()
+    assert rad_big / rad_small == pytest.approx(2.0, rel=0.05)
 
 
-def test_phase18_audio_smoothing_state_persists_on_engine() -> None:
-    """Phase-18: ParticleEngine maintains EMA-smoothed audio arrays
-    across calls. Verify they update toward fresh values."""
-    ctx = _try_make_ctx()
-    if ctx is None:
-        pytest.skip("no GL context available")
-    try:
-        from apophenia.audio.features_fast import FastFeatures
-        from apophenia.state import VisualState
-        from apophenia.visuals.particle_engine import ParticleEngine
+def test_compute_emitter_positions_unknown_pattern_falls_back_to_ring() -> None:
+    """Unknown pattern strings should not crash; we fall back to `ring`."""
+    from apophenia.visuals.particle_engine import compute_emitter_positions
 
-        pe = ParticleEngine(ctx, n_particles=100)
-        # Initial smoothed arrays are zero.
-        assert pe._smoothed_rms.sum() == 0.0
-        assert pe._smoothed_onset.sum() == 0.0
-
-        loud = FastFeatures(
-            rms=[0.7] * 14,
-            peak=[0.8] * 14,
-            centroid=[1500.0] * 14,
-            onset_envelope=[0.5] * 14,
-            n_channels=14,
-        )
-        state = VisualState()
-        # One frame should move the EMA partway toward the targets.
-        pe.update_and_render(
-            features=loud, time_s=0.0, dt=0.033,
-            resolution=(64, 64), state=state,
-        )
-        # After 1 frame at α=0.10, smoothed_rms ≈ 0.10 × 0.7 = 0.07.
-        assert pe._smoothed_rms[0] == pytest.approx(0.07, abs=0.005)
-        # After 1 frame at α=0.30, smoothed_onset ≈ 0.30 × 0.5 = 0.15.
-        assert pe._smoothed_onset[0] == pytest.approx(0.15, abs=0.005)
-
-        # 50 frames should converge close to the targets.
-        for i in range(1, 50):
-            pe.update_and_render(
-                features=loud, time_s=i * 0.033, dt=0.033,
-                resolution=(64, 64), state=state,
-            )
-        assert pe._smoothed_rms[0] == pytest.approx(0.7, abs=0.05)
-        assert pe._smoothed_onset[0] == pytest.approx(0.5, abs=0.05)
-    finally:
-        ctx.release()
+    pos = compute_emitter_positions("nonsense", 1.6, 0.0, 0.0, 0.0)
+    pos_ring = compute_emitter_positions("ring", 1.6, 0.0, 0.0, 0.0)
+    np.testing.assert_array_almost_equal(pos, pos_ring)
 
 
-def test_phase18_viscosity_vocabulary_writes_force_viscosity() -> None:
+def test_phase17_emitter_vocabulary_writes_emitter_state() -> None:
+    """Phase-17 keywords write to `emitter.*`."""
     from apophenia.prompt.interpreter import PromptInterpreter
+    from apophenia.state import EmitterState
 
     interp = PromptInterpreter()
-    for word, expected_min in [
-        ("viscous", 0.8),
-        ("oily", 0.85),
-        ("molasses", 0.9),
-        ("honey", 0.85),
+
+    # Each pattern keyword sets emitter.pattern.
+    for word, expected in [
+        ("ring", "ring"),
+        ("grid", "grid"),
+        ("linear", "line"),
+        ("constellation", "sphere"),
+        ("knot", "lissajous"),
     ]:
         r = interp.interpret(word)
-        assert r["matched"] == [word]
-        assert r["partial"]["force"]["viscosity"] >= expected_min, (
-            f"{word!r} should set high viscosity"
+        assert r["partial"]["emitter"]["pattern"] == expected, (
+            f"{word!r} → {expected}"
         )
 
-    for word, expected_max in [
-        ("airy", 0.2),
-        ("gaseous", 0.15),
-        ("loose", 0.25),
-        ("ethereal", 0.3),
-    ]:
-        r = interp.interpret(word)
-        assert r["matched"] == [word]
-        assert r["partial"]["force"]["viscosity"] <= expected_max
+    # Drift / radius modifiers.
+    r_w = interp.interpret("wandering")
+    assert r_w["partial"]["emitter"]["motion_amp"] >= 0.5
 
+    r_e = interp.interpret("expanding")
+    assert r_e["partial"]["emitter"]["radius"] > 2.0
 
-def test_phase17_camera_state_drift_validates() -> None:
-    """CameraState.drift ∈ [0, 2]; track_centroid is bool with default True."""
-    from pydantic import ValidationError
-
-    from apophenia.state import CameraState
-
-    c = CameraState()
-    assert c.drift == 0.4
-    assert c.track_centroid is True
-
-    with pytest.raises(ValidationError):
-        CameraState(drift=-0.1)
-    with pytest.raises(ValidationError):
-        CameraState(drift=3.0)
-    # Boundary values should validate.
-    CameraState(drift=0.0)
-    CameraState(drift=2.0)
+    # Vocabulary validates against the schema.
+    from apophenia.prompt.interpreter import VOCABULARY
+    for keyword, diff in VOCABULARY.items():
+        if "emitter" not in diff:
+            continue
+        merged = {**EmitterState().model_dump(), **diff["emitter"]}
+        EmitterState.model_validate(merged), f"{keyword!r} produces invalid emitter state"

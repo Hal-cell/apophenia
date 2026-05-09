@@ -177,17 +177,6 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "spiral":    {"camera": {"autorotate": True, "orbit_speed": 0.15}},
     "gentle":    {"camera": {"autorotate": True, "orbit_speed": 0.03},
                   "motion": {"speed": 0.6}},
-    # Phase-17 camera-motion vocabulary: drift amount + centroid tracking.
-    "wandering": {"camera": {"drift": 1.0, "track_centroid": True}},
-    "restless":  {"camera": {"drift": 1.4, "track_centroid": True},
-                  "mood": {"arousal": 0.5}},
-    "roaming":   {"camera": {"drift": 1.6, "track_centroid": True}},
-    "nomadic":   {"camera": {"drift": 1.8, "autorotate": True,
-                             "orbit_speed": 0.08}},
-    "fixed":     {"camera": {"drift": 0.0, "autorotate": False,
-                             "track_centroid": False}},
-    "framed":    {"camera": {"drift": 0.0, "track_centroid": False}},
-    "tracking":  {"camera": {"track_centroid": True, "drift": 0.3}},
 
     # ---- Audio-reactivity modifiers (phase 13) ---- #
     # These don't write camera params directly — they set `mood.arousal`,
@@ -211,11 +200,10 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "cohesive":   {"force": {"cohesion": 0.85, "vortex": 0.4}},
     "tight":      {"force": {"cohesion": 0.9, "max_speed": 1.4}},
     "fluid":      {"force": {"noise": 0.7, "vortex": 0.3, "cohesion": 0.55,
-                             "max_speed": 1.8, "viscosity": 0.6}},
-    "flowing":    {"force": {"noise": 0.75, "vortex": 0.25, "cohesion": 0.5,
-                             "viscosity": 0.55}},
+                             "max_speed": 1.8}},
+    "flowing":    {"force": {"noise": 0.75, "vortex": 0.25, "cohesion": 0.5}},
     "liquid":     {"force": {"noise": 0.75, "vortex": 0.4, "cohesion": 0.6,
-                             "max_speed": 1.6, "viscosity": 0.7}},
+                             "max_speed": 1.6}},
     "chaotic":    {"force": {"noise": 0.95, "vortex": 0.7, "cohesion": 0.2,
                              "max_speed": 4.0},
                    "mood": {"arousal": 0.7}},
@@ -269,22 +257,31 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "dots":       {"force": {"streak_length": 0.0}},
     "stippled":   {"force": {"streak_length": 0.0, "cohesion": 0.6}},
 
-    # ---- Viscosity / fluid thickness (phase 18) ---- #
-    # Maps directly to drag — high viscosity = oily-thick fluid,
-    # particles damp quickly into laminar streamlines; low = airy,
-    # particles fly easily and take a long time to settle.
-    "viscous":    {"force": {"viscosity": 0.85}},
-    "oily":       {"force": {"viscosity": 0.9}},
-    "molasses":   {"force": {"viscosity": 0.95, "max_speed": 1.2}},
-    "honey":      {"force": {"viscosity": 0.9, "max_speed": 1.4}},
-    # NOTE: `thick` was already a (motion.density + force.cohesion)
-    # word in the cluster section — extending it to also nudge
-    # viscosity up gives the conceptual "thick fluid" feel.
-    # `dense` similarly already paired density + cohesion.
-    "airy":       {"force": {"viscosity": 0.15}},
-    "gaseous":    {"force": {"viscosity": 0.1, "max_speed": 4.0}},
-    "loose":      {"force": {"viscosity": 0.2, "cohesion": 0.3}},
-    "ethereal":   {"force": {"viscosity": 0.25, "max_speed": 2.5}},
+    # ---- Emitter pattern (phase 17) ---- #
+    # Reshape where the 14 audio-channel anchors sit in 3D space.
+    # Particles still cluster around their home anchor (cohesion), so
+    # changing the pattern reshapes the entire scene's geometry.
+    "ring":       {"emitter": {"pattern": "ring"}},
+    "grid":       {"emitter": {"pattern": "grid"}},
+    "linear":     {"emitter": {"pattern": "line"}},
+    "horizon":    {"emitter": {"pattern": "line", "radius": 3.0},
+                   "camera": {"elevation": 5.0}},
+    "constellation": {"emitter": {"pattern": "sphere"}},
+    "globe":      {"emitter": {"pattern": "sphere", "radius": 2.0}},
+    "curve":      {"emitter": {"pattern": "lissajous"}},
+    "knot":       {"emitter": {"pattern": "lissajous", "radius": 2.0}},
+
+    # Drift modifiers — emitters wander on per-channel orbits.
+    "wandering":  {"emitter": {"motion_amp": 0.6, "motion_speed": 0.4}},
+    "restless":   {"emitter": {"motion_amp": 0.8, "motion_speed": 0.8}},
+    "drifting_emitters": {"emitter": {"motion_amp": 0.4, "motion_speed": 0.3}},
+    "static_emitters":   {"emitter": {"motion_amp": 0.0}},
+
+    # Radius modifiers — uniform scale on the pattern.
+    "expanding":  {"emitter": {"radius": 3.0}},
+    "contracting": {"emitter": {"radius": 0.8}},
+    "tight_pattern":  {"emitter": {"radius": 0.7}},
+    "wide_pattern":   {"emitter": {"radius": 3.5}},
 
     # ---- Behaviour primitives ---- #
     "bloom":     {"motion": {"speed": 0.7, "density": 0.6,
