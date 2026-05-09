@@ -841,6 +841,86 @@ def test_pattern_morph_interpolates_between_patterns() -> None:
         ctx.release()
 
 
+def test_radius_changes_propagate_immediately() -> None:
+    """Phase-19 regression: dragging the radius slider continuously
+    should produce continuously different emitter positions, NOT a
+    frozen state. The phase-18 bug treated every numeric change as a
+    fresh transition (resetting the smoothstep clock to t=0 each
+    frame), which froze the displayed positions while the slider was
+    being dragged.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        pe = ParticleEngine(ctx, n_particles=100)
+
+        # Frame-by-frame radius drag from 1.6 → 2.0 over 4 frames.
+        # No pattern change — only radius drift.
+        last_positions: list[np.ndarray] = []
+        for i, r in enumerate([1.6, 1.7, 1.8, 1.9, 2.0]):
+            pos = pe._dynamic_emitter_positions(
+                pattern="ring",
+                radius=r,
+                motion_amp=0.0, motion_speed=0.0,
+                time_s=i * 0.016,
+                rms=np.zeros(14, dtype=np.float32),
+                onset=np.zeros(14, dtype=np.float32),
+                weight=np.ones(14, dtype=np.float32),
+            )
+            last_positions.append(pos.copy())
+
+        # Each frame's positions should differ from the previous —
+        # specifically, ch0 (at angle 0 on the ring) should grow in X
+        # as radius grows. Pre-fix bug froze ch0[0] at 1.6.
+        x_values = [p[0, 0] for p in last_positions]
+        assert all(
+            x_values[i] < x_values[i + 1] for i in range(len(x_values) - 1)
+        ), f"radius drag should produce monotonically growing X for ch0; got {x_values}"
+        # And the final position should match radius=2.0 exactly.
+        assert x_values[-1] == pytest.approx(2.0, rel=1e-3)
+    finally:
+        ctx.release()
+
+
+def test_motion_amp_changes_propagate_immediately() -> None:
+    """Phase-19 regression sibling: motion_amp slider drags should
+    affect output positions immediately, not get gated by morph
+    machinery. Compare two snapshots at same time but different
+    motion_amp."""
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        pe = ParticleEngine(ctx, n_particles=100)
+
+        # Same pattern + radius, different motion_amp.
+        common = dict(
+            pattern="ring", radius=1.6,
+            motion_speed=1.0, time_s=0.5,  # mid-orbit, so drift differs
+            rms=np.zeros(14, dtype=np.float32),
+            onset=np.zeros(14, dtype=np.float32),
+            weight=np.ones(14, dtype=np.float32),
+        )
+        # Engine instance is shared so transition state isn't fresh —
+        # but pattern hasn't changed, so no transition gets triggered.
+        p_low = pe._dynamic_emitter_positions(motion_amp=0.0, **common)
+        p_high = pe._dynamic_emitter_positions(motion_amp=0.8, **common)
+
+        # motion_amp=0.8 with motion_speed=1 at t=0.5 produces a
+        # measurable drift offset on top of the same base.
+        diff = np.abs(p_high - p_low).max()
+        assert diff > 0.05, (
+            f"motion_amp slider should change positions; max diff {diff}"
+        )
+    finally:
+        ctx.release()
+
+
 def test_onset_pulse_pushes_emitter_outward() -> None:
     """Phase-18 onset pulse: when a channel onsets, its emitter pumps
     outward (along its radial direction from origin) by an amount
