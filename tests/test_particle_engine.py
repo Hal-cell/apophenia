@@ -851,6 +851,207 @@ def test_channel_kick_directions_are_well_dispersed() -> None:
     np.testing.assert_allclose(norms, 1.0, atol=1e-5)
 
 
+# --------------------------------------------------------------------------- #
+# Phase 18: fluid dynamics
+# --------------------------------------------------------------------------- #
+
+
+def test_phase18_particles_stay_contained_under_long_simulation() -> None:
+    """Phase-18 fix for "particles drift far away over time": with the
+    soft world bound (r=4 restoring force) + hard reset (r>5 → snap
+    home), particles should stay within a moderate scene radius even
+    after hundreds of frames of varied audio.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        # Loud, onset-heavy audio that would push particles far in the
+        # phase-15/-17 model.
+        features = FastFeatures(
+            rms=[0.8] * 14,
+            peak=[0.9] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.7] * 14,
+            n_channels=14,
+        )
+        state = VisualState()
+
+        pe = ParticleEngine(ctx, n_particles=2000)
+        # 300 frames ≈ 10 seconds at 30fps simulation step.
+        for i in range(300):
+            pe.update_and_render(
+                features=features,
+                time_s=i * 0.033,
+                dt=0.033,
+                resolution=(64, 64),
+                state=state,
+            )
+
+        buf = np.frombuffer(
+            pe._buffers[pe._read_idx].read(), dtype=np.float32
+        ).reshape(-1, 8)
+        radii = np.linalg.norm(buf[:, 0:3], axis=1)
+        # Hard reset triggers at r=5; allow tiny epsilon for in-flight
+        # particles between reset frames.
+        assert radii.max() < 5.5, (
+            f"phase-18 containment broke: max particle radius = "
+            f"{radii.max():.2f}"
+        )
+        # The cluster should still have meaningful radial extent —
+        # particles haven't all collapsed onto the emitter ring
+        # (mean radius near 1.6 is the ring; "collapsed" would be
+        # mean ≈ 0 with very low std). Use mean as the no-collapse
+        # signal.
+        assert radii.mean() > 0.8, (
+            f"phase-18 anti-collapse broke: mean radius = "
+            f"{radii.mean():.3f}; particles are piling at origin"
+        )
+    finally:
+        ctx.release()
+
+
+def test_phase18_no_centroid_collapse_under_dense_audio() -> None:
+    """Phase-18 fix for "particles eventually collapse to a point":
+    under multi-channel-loud audio, the multi-emitter pull used to
+    drag every particle to the centroid (origin). With the secondary
+    pull lowered to 0.08, particles should stay distributed across
+    their home territories.
+
+    Test: after long simulation under dense audio, the std of particle
+    positions should be > 1.0 — meaning particles are spread out, not
+    piled at origin.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        # All channels equally loud — the worst case for centroid
+        # collapse since every emitter pulls every particle.
+        features = FastFeatures(
+            rms=[0.5] * 14,
+            peak=[0.6] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.0] * 14,
+            n_channels=14,
+        )
+        state = VisualState()
+
+        pe = ParticleEngine(ctx, n_particles=2000)
+        for i in range(400):
+            pe.update_and_render(
+                features=features,
+                time_s=i * 0.033,
+                dt=0.033,
+                resolution=(64, 64),
+                state=state,
+            )
+
+        buf = np.frombuffer(
+            pe._buffers[pe._read_idx].read(), dtype=np.float32
+        ).reshape(-1, 8)
+        # Spread metric: XZ-plane spread (the emitter ring lies in XZ;
+        # Y intentionally has a tiny wobble so its variance is small
+        # by design). If particles have collapsed to centroid, BOTH
+        # X and Z spread would be near zero.
+        x_std = buf[:, 0].std()
+        z_std = buf[:, 2].std()
+        assert x_std > 0.5 and z_std > 0.5, (
+            f"phase-18 anti-collapse broke under dense audio: "
+            f"X std={x_std:.3f}, Z std={z_std:.3f}"
+        )
+        # And the mean distance from origin in XZ stays above the
+        # collapse threshold.
+        xz_dist = np.sqrt(buf[:, 0] ** 2 + buf[:, 2] ** 2)
+        assert xz_dist.mean() > 0.8, (
+            f"phase-18 anti-collapse broke: mean XZ distance = "
+            f"{xz_dist.mean():.3f}"
+        )
+    finally:
+        ctx.release()
+
+
+def test_phase18_audio_smoothing_state_persists_on_engine() -> None:
+    """Phase-18: ParticleEngine maintains EMA-smoothed audio arrays
+    across calls. Verify they update toward fresh values."""
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        pe = ParticleEngine(ctx, n_particles=100)
+        # Initial smoothed arrays are zero.
+        assert pe._smoothed_rms.sum() == 0.0
+        assert pe._smoothed_onset.sum() == 0.0
+
+        loud = FastFeatures(
+            rms=[0.7] * 14,
+            peak=[0.8] * 14,
+            centroid=[1500.0] * 14,
+            onset_envelope=[0.5] * 14,
+            n_channels=14,
+        )
+        state = VisualState()
+        # One frame should move the EMA partway toward the targets.
+        pe.update_and_render(
+            features=loud, time_s=0.0, dt=0.033,
+            resolution=(64, 64), state=state,
+        )
+        # After 1 frame at α=0.10, smoothed_rms ≈ 0.10 × 0.7 = 0.07.
+        assert pe._smoothed_rms[0] == pytest.approx(0.07, abs=0.005)
+        # After 1 frame at α=0.30, smoothed_onset ≈ 0.30 × 0.5 = 0.15.
+        assert pe._smoothed_onset[0] == pytest.approx(0.15, abs=0.005)
+
+        # 50 frames should converge close to the targets.
+        for i in range(1, 50):
+            pe.update_and_render(
+                features=loud, time_s=i * 0.033, dt=0.033,
+                resolution=(64, 64), state=state,
+            )
+        assert pe._smoothed_rms[0] == pytest.approx(0.7, abs=0.05)
+        assert pe._smoothed_onset[0] == pytest.approx(0.5, abs=0.05)
+    finally:
+        ctx.release()
+
+
+def test_phase18_viscosity_vocabulary_writes_force_viscosity() -> None:
+    from apophenia.prompt.interpreter import PromptInterpreter
+
+    interp = PromptInterpreter()
+    for word, expected_min in [
+        ("viscous", 0.8),
+        ("oily", 0.85),
+        ("molasses", 0.9),
+        ("honey", 0.85),
+    ]:
+        r = interp.interpret(word)
+        assert r["matched"] == [word]
+        assert r["partial"]["force"]["viscosity"] >= expected_min, (
+            f"{word!r} should set high viscosity"
+        )
+
+    for word, expected_max in [
+        ("airy", 0.2),
+        ("gaseous", 0.15),
+        ("loose", 0.25),
+        ("ethereal", 0.3),
+    ]:
+        r = interp.interpret(word)
+        assert r["matched"] == [word]
+        assert r["partial"]["force"]["viscosity"] <= expected_max
+
+
 def test_phase17_camera_state_drift_validates() -> None:
     """CameraState.drift ∈ [0, 2]; track_centroid is bool with default True."""
     from pydantic import ValidationError

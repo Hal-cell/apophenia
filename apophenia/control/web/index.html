@@ -583,6 +583,11 @@
           <input type="range" id="force-streak_length" min="0" max="0.5" step="0.005" value="0.06">
           <span class="ctrl-value" id="force-streak_length-v">0.06</span>
         </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">viscosity</span>
+          <input type="range" id="force-viscosity" min="0" max="1" step="0.01" value="0.5">
+          <span class="ctrl-value" id="force-viscosity-v">0.50</span>
+        </div>
       </section>
     </div>
 
@@ -783,6 +788,7 @@
     'force.cohesion':           bindSlider('force-cohesion',           'force.cohesion'),
     'force.max_speed':          bindSlider('force-max_speed',          'force.max_speed', (v) => v.toFixed(1)),
     'force.streak_length':      bindSlider('force-streak_length',      'force.streak_length', (v) => v.toFixed(3)),
+    'force.viscosity':          bindSlider('force-viscosity',          'force.viscosity'),
   };
 
   // ---------------------------------------------------------------- //
@@ -1094,6 +1100,9 @@
       sliders['force.max_speed'].set(s.force.max_speed);
       if (s.force.streak_length !== undefined) {
         sliders['force.streak_length'].set(s.force.streak_length);
+      }
+      if (s.force.viscosity !== undefined) {
+        sliders['force.viscosity'].set(s.force.viscosity);
       }
     }
   }

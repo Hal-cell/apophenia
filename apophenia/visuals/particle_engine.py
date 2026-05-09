@@ -208,13 +208,24 @@ class ParticleEngine:
         ]
 
         # Phase-17: smoothed audio-weighted centroid the camera tracks.
-        # Initialised at the world origin so the first frame doesn't
-        # snap to a wild target.
         self._smoothed_centroid = np.zeros(3, dtype=np.float32)
-        # EMA alpha for centroid tracking. ~0.04 ≈ half-second at 60fps;
-        # slow enough that the camera doesn't jitter on every onset,
-        # fast enough that it follows sustained activity in <1 sec.
         self._centroid_alpha = 0.04
+
+        # Phase-18: smoothed per-channel audio inputs. Raw audio
+        # fluctuates frame-to-frame at the WS broadcast rate, which
+        # turned the simulation jittery — every frame a slightly
+        # different force. EMA-smoothing the per-channel arrays
+        # (~0.15s time constant at 60fps) gives the simulation a
+        # stable force field that evolves smoothly with the music.
+        self._smoothed_rms = np.zeros(14, dtype=np.float32)
+        self._smoothed_onset = np.zeros(14, dtype=np.float32)
+        self._smoothed_centroid_ch = np.zeros(14, dtype=np.float32)
+        # Two different EMAs: rms/centroid use a smoother track (slower
+        # changes are more meaningful for them); onset envelopes are
+        # already geometric-decay outputs from the audio loop, so we
+        # smooth them less to keep their transient shape.
+        self._rms_alpha = 0.10
+        self._onset_alpha = 0.30
 
     # ------------------------------------------------------------------ #
     # Init
@@ -293,24 +304,40 @@ class ParticleEngine:
             return
 
         # ---- Pull audio uniforms (14 floats per array) ---- #
-        rms = self._channel_array(features.rms if features else None)
-        onset = self._channel_array(features.onset_envelope if features else None)
-        centroid = self._channel_array(features.centroid if features else None)
+        # Phase-18: EMA-smooth the per-channel arrays so the simulation
+        # doesn't see frame-to-frame audio jitter as force jitter.
+        # Raw values are used for the AUDIO-WEIGHTED CENTROID (camera
+        # tracking already has its own EMA, and using raw here keeps the
+        # camera responsive); smoothed values feed the SHADER UNIFORMS.
+        raw_rms = self._channel_array(features.rms if features else None)
+        raw_onset = self._channel_array(features.onset_envelope if features else None)
+        raw_centroid = self._channel_array(features.centroid if features else None)
+
+        self._smoothed_rms += (raw_rms - self._smoothed_rms) * self._rms_alpha
+        self._smoothed_onset += (raw_onset - self._smoothed_onset) * self._onset_alpha
+        self._smoothed_centroid_ch += (
+            raw_centroid - self._smoothed_centroid_ch
+        ) * self._rms_alpha
+
+        rms = self._smoothed_rms
+        onset = self._smoothed_onset
+        centroid = self._smoothed_centroid_ch
+
         weight = np.array(state.channel_weight, dtype=np.float32)
         if weight.size != 14:
             weight = np.ones(14, dtype=np.float32)
 
-        # Phase-13 audio energy scalars: a single "loudness" number for
-        # flow-field strength, plus the CLAP embedding norm for slow
-        # timbre tracking. Multiplied by per-channel weight so a muted
-        # channel can't push the overall energy up.
+        # Phase-13 audio energy scalars: based on smoothed values so the
+        # flow-field strength evolves smoothly with the music rather
+        # than per-frame.
         weighted_rms = rms * weight
         audio_intensity = float(np.clip(weighted_rms.mean() * 1.4, 0.0, 1.0))
-        weighted_onset = onset * weight
-        onset_avg = float(np.clip(weighted_onset.mean(), 0.0, 1.0))
+        # `onset_avg` for camera elevation kick uses RAW onsets so
+        # transient camera shake stays sharp (smoothing it would defeat
+        # the point).
+        weighted_onset_raw = raw_onset * weight
+        onset_avg = float(np.clip(weighted_onset_raw.mean(), 0.0, 1.0))
         audio_norm = float(slow.embedding_norm) if slow is not None else 0.0
-        # CLAP norms are typically ~1 (the model L2-normalises); damp to
-        # a useful 0..1 range with a soft-knee.
         audio_norm = float(np.clip(audio_norm * 0.5, 0.0, 1.0))
 
         # ---- Update pass ---- #
@@ -327,6 +354,7 @@ class ParticleEngine:
             force_vortex=float(state.force.vortex),
             force_cohesion=float(state.force.cohesion),
             max_speed=float(state.force.max_speed),
+            viscosity=float(state.force.viscosity),
         )
 
         write_idx = 1 - self._read_idx
@@ -448,6 +476,7 @@ class ParticleEngine:
         force_vortex: float,
         force_cohesion: float,
         max_speed: float,
+        viscosity: float,
     ) -> None:
         prog = self.update_program
         _set(prog, "u_dt", float(dt))
@@ -462,6 +491,8 @@ class ParticleEngine:
         _set(prog, "u_force_vortex", force_vortex)
         _set(prog, "u_force_cohesion", force_cohesion)
         _set(prog, "u_max_speed", max_speed)
+        # Phase-18.
+        _set(prog, "u_viscosity", float(viscosity))
         # Array uniforms.
         _set_array(prog, "u_rms", rms)
         _set_array(prog, "u_onset", onset)
