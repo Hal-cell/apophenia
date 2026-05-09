@@ -63,6 +63,20 @@ class SpectrumFeatures:
             "spectrum_block_count": self.block_count,
         }
 
+    def filter_to(self, allowed_channels: set[int]) -> SpectrumFeatures:
+        """Return a copy keeping only entries whose channel index is in
+        `allowed_channels`. Used for live role-switching — channels no
+        longer in audio role drop out of the next emission, channels
+        newly in audio role re-appear with whatever bins the detector
+        had on its last throttle boundary."""
+        keep = [i for i, ch in enumerate(self.channel_indices) if ch in allowed_channels]
+        return SpectrumFeatures(
+            channel_indices=[self.channel_indices[i] for i in keep],
+            bins=[list(self.bins[i]) for i in keep],
+            bin_edges_hz=list(self.bin_edges_hz),
+            block_count=self.block_count,
+        )
+
 
 class SpectrumDetector:
     """Stateful Hann-windowed FFT → log-spaced bins, throttled.

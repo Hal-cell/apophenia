@@ -27,6 +27,7 @@ think about jacks on the panel) and converted to 0-based internally.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable
 from enum import StrEnum
 
@@ -116,6 +117,106 @@ class ChannelMap:
                 assigned[idx] = role
                 roles[idx] = role
         return cls(roles)
+
+
+class ChannelRolesController:
+    """Thread-safe live channel-role state.
+
+    The audio thread reads roles every block (`get()` returns a snapshot
+    list to avoid holding the lock while iterating); the FastAPI HTTP
+    thread mutates them via `set_one()` or `set_all()` when the user
+    clicks a role badge in the web UI.
+
+    Validation:
+      * `set_one` rejects out-of-range indices and unknown role strings
+      * `set_all` rejects length mismatches against `n_channels`
+
+    The audio loop snapshots once per block and uses that snapshot for
+    the entire block's filtering — so a mid-block role change is
+    visible at most one block later, never half-applied.
+    """
+
+    def __init__(self, roles: list[ChannelRole]) -> None:
+        if not roles:
+            raise ValueError("ChannelRolesController requires at least one channel")
+        self._lock = threading.Lock()
+        self._roles: list[ChannelRole] = list(roles)
+        # Monotonic version counter — bumped on every successful update.
+        # The web UI / WS payload exposes this so consumers can
+        # cheap-detect "did the role list change since I last looked"
+        # without comparing element-wise.
+        self._version = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._roles)
+
+    @property
+    def n_channels(self) -> int:
+        with self._lock:
+            return len(self._roles)
+
+    def get(self) -> list[ChannelRole]:
+        """Return a snapshot copy of the current role list."""
+        with self._lock:
+            return list(self._roles)
+
+    def role(self, channel_idx: int) -> ChannelRole:
+        with self._lock:
+            return self._roles[channel_idx]
+
+    def channels_with(self, role: ChannelRole) -> list[int]:
+        with self._lock:
+            return [i for i, r in enumerate(self._roles) if r == role]
+
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+    def set_one(self, channel_idx: int, role: ChannelRole | str) -> None:
+        """Update one channel's role. Raises ValueError on bad input."""
+        role_enum = _coerce_role(role)
+        with self._lock:
+            if not 0 <= channel_idx < len(self._roles):
+                raise ValueError(
+                    f"channel index {channel_idx} out of range "
+                    f"[0, {len(self._roles)})"
+                )
+            self._roles[channel_idx] = role_enum
+            self._version += 1
+
+    def set_all(self, roles: list[ChannelRole | str]) -> None:
+        """Replace the entire role list. Length must match n_channels."""
+        coerced = [_coerce_role(r) for r in roles]
+        with self._lock:
+            if len(coerced) != len(self._roles):
+                raise ValueError(
+                    f"expected {len(self._roles)} roles, got {len(coerced)}"
+                )
+            self._roles = coerced
+            self._version += 1
+
+    def snapshot(self) -> ChannelMap:
+        """Return an immutable ChannelMap snapshot (for to_dict() etc)."""
+        with self._lock:
+            return ChannelMap(list(self._roles))
+
+
+def _coerce_role(value: ChannelRole | str) -> ChannelRole:
+    """Accept a `ChannelRole` or a string and return a `ChannelRole`,
+    raising ValueError on unknown strings."""
+    if isinstance(value, ChannelRole):
+        return value
+    if isinstance(value, str):
+        # Case-insensitive for ergonomics; canonical values are lowercase.
+        try:
+            return ChannelRole(value.lower())
+        except ValueError as e:
+            raise ValueError(
+                f"unknown role {value!r}; expected one of "
+                f"{[r.value for r in ChannelRole]}"
+            ) from e
+    raise ValueError(f"role must be ChannelRole or str, got {type(value).__name__}")
 
 
 def _parse_range_spec(spec: str) -> Iterable[int]:

@@ -57,6 +57,18 @@ class GateFeatures:
             "gate_block_count": self.block_count,
         }
 
+    def filter_to(self, allowed_channels: set[int]) -> GateFeatures:
+        """Return a copy keeping only entries whose channel index is in
+        `allowed_channels`. Used for live role-switching."""
+        keep = [i for i, ch in enumerate(self.channel_indices) if ch in allowed_channels]
+        return GateFeatures(
+            channel_indices=[self.channel_indices[i] for i in keep],
+            states=[self.states[i] for i in keep],
+            rising_edges=[self.rising_edges[i] for i in keep],
+            falling_edges=[self.falling_edges[i] for i in keep],
+            block_count=self.block_count,
+        )
+
 
 class GateDetector:
     """Schmitt-triggered binary state per gate channel."""

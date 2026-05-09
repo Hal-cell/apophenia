@@ -82,7 +82,21 @@
     display: flex; justify-content: space-between; padding: 6px 8px;
   }
   .channel .label .num { color: var(--accent); }
-  .channel .label .role { color: var(--text-dim); font-size: 9px; }
+  .channel .label .role {
+    color: var(--text-dim); font-size: 9px;
+    cursor: pointer; user-select: none;
+    padding: 1px 6px; border-radius: 8px;
+    border: 1px solid transparent;
+    transition: background 80ms linear, border-color 80ms linear;
+  }
+  .channel .label .role:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--border);
+  }
+  .channel .label .role.pending {
+    opacity: 0.5;
+    border-color: var(--accent);
+  }
   .channel.role-audio .label .role { color: var(--accent); }
   .channel.role-cv .label .role { color: var(--cv-fill-pos); }
   .channel.role-gate .label .role { color: var(--gate-on); }
@@ -279,6 +293,7 @@
     <span>cv: bipolar bar [-1, 1] · numeric value · rate ticker</span>
     <span>gate: LED state · edge-event flash (green = rising, red = falling)</span>
     <span>clap: 512-dim audio embedding @ ~1Hz, downsampled to 32 bars</span>
+    <span><code>click role badge</code> to cycle audio → cv → gate</span>
   </footer>
 
 <script>
@@ -346,6 +361,39 @@
   // Per-role cell builders
   // --------------------------------------------------------------- //
 
+  // Cycle order when the role badge is clicked.
+  const ROLE_CYCLE = ['audio', 'cv', 'gate'];
+
+  function attachRoleHandler(cell, idx) {
+    const badge = cell.root.querySelector('.role');
+    if (!badge) return;
+    badge.title = 'click to cycle role: audio → cv → gate';
+    badge.addEventListener('click', async () => {
+      const current = badge.textContent.trim();
+      const next = ROLE_CYCLE[(ROLE_CYCLE.indexOf(current) + 1) % ROLE_CYCLE.length];
+      badge.classList.add('pending');
+      try {
+        const res = await fetch('/roles', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({channel: idx, role: next}),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          console.error('role update failed:', err);
+        }
+        // The next WS message will reflect the new role and trigger
+        // a cell rebuild via rolesEqual() — pending class is just
+        // visual feedback in the meantime.
+      } catch (e) {
+        console.error('role update threw:', e);
+      } finally {
+        // Drop the pending look after a short window even if WS is slow.
+        setTimeout(() => badge.classList.remove('pending'), 500);
+      }
+    });
+  }
+
   function buildAudioCell(idx) {
     const c = document.createElement('div');
     c.className = 'channel role-audio';
@@ -360,7 +408,7 @@
       <div class="value">–∞</div>
       <div class="centroid">—</div>
       <div class="spectrum empty">${sbins}</div>`;
-    return {
+    const cell = {
       kind: 'audio',
       root: c,
       flash: c.querySelector('.flash'),
@@ -373,6 +421,8 @@
       lastPeakDb: FLOOR_DB,
       lastPeakAt: 0,
     };
+    attachRoleHandler(cell, idx);
+    return cell;
   }
 
   function buildCvCell(idx) {
@@ -386,13 +436,15 @@
         <div class="cv-value">0.00</div>
         <div class="cv-rate">—</div>
       </div>`;
-    return {
+    const cell = {
       kind: 'cv',
       root: c,
       fill: c.querySelector('.cv-fill'),
       value: c.querySelector('.cv-value'),
       rate: c.querySelector('.cv-rate'),
     };
+    attachRoleHandler(cell, idx);
+    return cell;
   }
 
   function buildGateCell(idx) {
@@ -405,12 +457,14 @@
         <div class="gate-led"></div>
         <div class="gate-state-text">OFF</div>
       </div>`;
-    return {
+    const cell = {
       kind: 'gate',
       root: c,
       stateText: c.querySelector('.gate-state-text'),
       edgeTimer: null,
     };
+    attachRoleHandler(cell, idx);
+    return cell;
   }
 
   function rebuildCells(roles) {

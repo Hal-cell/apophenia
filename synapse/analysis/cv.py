@@ -52,6 +52,20 @@ class CVFeatures:
             "cv_block_count": self.block_count,
         }
 
+    def filter_to(self, allowed_channels: set[int]) -> CVFeatures:
+        """Return a copy keeping only entries whose channel index is in
+        `allowed_channels`. Used by the audio loop to project the
+        full-channel detector output onto the channels currently in
+        CV role (live role-switching)."""
+        keep = [i for i, ch in enumerate(self.channel_indices) if ch in allowed_channels]
+        return CVFeatures(
+            channel_indices=[self.channel_indices[i] for i in keep],
+            values=[self.values[i] for i in keep],
+            rates=[self.rates[i] for i in keep],
+            block_count=self.block_count,
+            timestamp=self.timestamp,
+        )
+
 
 class CVDetector:
     """Stateful single-pole IIR low-pass per CV channel.
