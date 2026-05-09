@@ -645,6 +645,57 @@ def test_streak_render_produces_visible_output() -> None:
         ctx.release()
 
 
+def test_ribbon_render_pixel_coverage_scales_with_width() -> None:
+    """Phase-20: at higher streak_width, the billboard ribbon should
+    cover more pixels than at narrow width. We render the same scene
+    twice (only width differs) and compare bright-pixel counts.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        size = (128, 128)
+
+        def render_with_width(width: float) -> int:
+            out_tex = ctx.texture(size, components=4, dtype="f1")
+            fbo = ctx.framebuffer(color_attachments=[out_tex])
+            pe = ParticleEngine(ctx, n_particles=2000)
+            state = VisualState()
+            state.force.streak_length = 0.2
+            state.force.streak_width = width
+            features = FastFeatures(
+                rms=[0.7] * 14, peak=[0.8] * 14,
+                centroid=[1500.0] * 14,
+                onset_envelope=[0.3] * 14,
+                n_channels=14,
+            )
+            fbo.use()
+            ctx.viewport = (0, 0, *size)
+            ctx.clear(0.0, 0.0, 0.0, 1.0)
+            for i in range(20):
+                pe.update_and_render(features, time_s=i * 0.033, dt=0.033,
+                                     resolution=size, state=state)
+            raw = fbo.read(components=4, dtype="f1")
+            return sum(1 for i in range(0, len(raw), 4)
+                       if raw[i] > 5 or raw[i + 1] > 5 or raw[i + 2] > 5)
+
+        bright_thin = render_with_width(0.002)
+        bright_thick = render_with_width(0.04)
+        # Thicker ribbons should light up substantially more pixels.
+        # Tighter ratios get lost to particle overlap at high counts /
+        # low res; we only need the direction to be unambiguous.
+        assert bright_thick > bright_thin * 1.5, (
+            f"thick ribbons should cover more pixels than thin; "
+            f"thin={bright_thin}, thick={bright_thick}"
+        )
+    finally:
+        ctx.release()
+
+
 def test_phase16_streak_vocabulary_writes_force_streak_length() -> None:
     """`streaks / lines / ribbons / comet / wisps` raise streak_length;
     `points / dots / stippled` zero it."""

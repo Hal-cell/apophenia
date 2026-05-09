@@ -278,20 +278,32 @@ class ParticleEngine:
             for buf in self._buffers
         ]
 
-        # Render pass: phase-16 instanced line rendering. Each particle
-        # is drawn as a 2-vertex GL_LINES primitive (tail → head). The
-        # static `_line_geom` VBO holds two `in_vertex_t` values (0 for
-        # tail, 1 for head); the per-instance attributes pull from the
-        # particle state buffer. Net: 2 × N vertex shader invocations,
-        # GL_LINES rasterizes the streaks.
+        # Render pass: phase-20 billboard ribbon. Each particle is a
+        # 4-vertex GL_TRIANGLE_STRIP quad (tail-left, head-left,
+        # tail-right, head-right) extruded perpendicular to the view
+        # direction by `streak_width`. Replaces the phase-16 2-vertex
+        # GL_LINES streak — quads can have arbitrary pixel width while
+        # macOS GL caps glLineWidth at 1.
+        #
+        # Static geometry: 4 (u, v) pairs interleaved as 8 floats.
+        # u = head_t (0 = tail, 1 = head); v = side (0 = -width, 1 = +width).
+        # Order: tail-left, head-left, tail-right, head-right.
         self._line_geom = ctx.buffer(
-            np.array([0.0, 1.0], dtype="f4").tobytes()
+            np.array(
+                [
+                    0.0, 0.0,   # tail, left
+                    1.0, 0.0,   # head, left
+                    0.0, 1.0,   # tail, right
+                    1.0, 1.0,   # head, right
+                ],
+                dtype="f4",
+            ).tobytes()
         )
         self._render_vaos = [
             ctx.vertex_array(
                 self.render_program,
                 [
-                    (self._line_geom, "1f", "in_vertex_t"),
+                    (self._line_geom, "2f", "in_vertex_uv"),
                     (buf, "4f 4f /i", "in_pos_age", "in_vel_seed"),
                 ],
             )
@@ -591,14 +603,18 @@ class ParticleEngine:
             hue_offset_deg=float(state.palette.hue) * 360.0,
             saturation=float(state.palette.saturation),
             streak_length=float(state.force.streak_length),
+            streak_width=float(state.force.streak_width),
+            camera_pos=eye,
         )
-        # Phase-16: instanced GL_LINES — each particle is one 2-vertex
-        # line. The static line geom (2 t-values) is consumed by the
-        # vertex shader twice per particle (tail at t=0, head at t=1);
-        # the per-instance particle data is shared between both ends.
+        # Phase-20: instanced GL_TRIANGLE_STRIP ribbon. Each particle is
+        # one 4-vertex billboard quad. The static quad geom (4 (u, v)
+        # pairs) is consumed by the vertex shader four times per
+        # particle; the per-instance attributes are shared across all
+        # four corners. Triangle strip with 4 verts = 2 triangles =
+        # 1 quad.
         self._render_vaos[self._read_idx].render(
-            mode=moderngl.LINES,
-            vertices=2,
+            mode=moderngl.TRIANGLE_STRIP,
+            vertices=4,
             instances=self.n_particles,
         )
 
@@ -667,6 +683,8 @@ class ParticleEngine:
         hue_offset_deg: float,
         saturation: float,
         streak_length: float,
+        streak_width: float,
+        camera_pos: tuple[float, float, float],
     ) -> None:
         prog = self.render_program
         # moderngl accepts mat4 as a flat 16-float tuple. Standard GL is
@@ -681,6 +699,9 @@ class ParticleEngine:
         _set(prog, "u_hue_offset_deg", hue_offset_deg)
         _set(prog, "u_saturation", saturation)
         _set(prog, "u_streak_length", streak_length)
+        # Phase-20 ribbon uniforms.
+        _set(prog, "u_streak_width", streak_width)
+        _set(prog, "u_camera_pos", tuple(float(c) for c in camera_pos))
 
 
 # --------------------------------------------------------------------------- #

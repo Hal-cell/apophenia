@@ -73,13 +73,14 @@ VOCABULARY: dict[str, dict[str, Any]] = {
 
     # ---- Motion: density / texture ---- #
     "sparse":    {"motion": {"density": 0.15}},
-    "thin":      {"motion": {"density": 0.2}},
+    "thin":      {"motion": {"density": 0.2},
+                  "force": {"streak_width": 0.005}},
     # `dense` writes both motion.density and force.cohesion — phase-14
     # made these conceptually paired (more particles + held tighter).
     "dense":     {"motion": {"density": 0.85},
                   "force": {"cohesion": 0.75}},
     "thick":     {"motion": {"density": 0.8},
-                  "force": {"cohesion": 0.7}},
+                  "force": {"cohesion": 0.7, "streak_width": 0.025}},
     "fine":      {"motion": {"density": 0.75}},
     "chunky":    {"motion": {"density": 0.25}},
     "coarse":    {"motion": {"density": 0.3}},
@@ -88,7 +89,8 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     # ---- Motion: sensitivity (onset response) ---- #
     "punchy":    {"motion": {"onset_sensitivity": 1.6}},
     "responsive":{"motion": {"onset_sensitivity": 1.4}},
-    "soft":      {"motion": {"onset_sensitivity": 0.4}},
+    "soft":      {"motion": {"onset_sensitivity": 0.4},
+                  "force": {"streak_width": 0.020, "cohesion": 0.55}},
     "muted":     {"motion": {"onset_sensitivity": 0.3},
                   "palette": {"saturation": 0.5}},
 
@@ -256,6 +258,16 @@ VOCABULARY: dict[str, dict[str, Any]] = {
     "points":     {"force": {"streak_length": 0.0}},
     "dots":       {"force": {"streak_length": 0.0}},
     "stippled":   {"force": {"streak_length": 0.0, "cohesion": 0.6}},
+
+    # ---- Streak width (phase 20) ---- #
+    # Phase 20 made streaks billboard quads instead of 1px lines —
+    # `streak_width` is a real world-space dial. `thin`/`thick`/`soft`
+    # already declared earlier with combined definitions; these are
+    # the new width-only keywords.
+    "hairline":   {"force": {"streak_width": 0.003}},
+    "fat":        {"force": {"streak_width": 0.035}},
+    "bold":       {"force": {"streak_width": 0.030}},
+    "wispy":      {"force": {"streak_width": 0.008, "streak_length": 0.18}},
 
     # ---- Emitter pattern (phase 17) ---- #
     # Reshape where the 14 audio-channel anchors sit in 3D space.

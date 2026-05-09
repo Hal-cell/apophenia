@@ -583,6 +583,11 @@
           <input type="range" id="force-streak_length" min="0" max="0.5" step="0.005" value="0.06">
           <span class="ctrl-value" id="force-streak_length-v">0.06</span>
         </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">streak width</span>
+          <input type="range" id="force-streak_width" min="0.001" max="0.05" step="0.001" value="0.012">
+          <span class="ctrl-value" id="force-streak_width-v">0.012</span>
+        </div>
       </section>
     </div>
 
@@ -815,6 +820,7 @@
     'force.cohesion':           bindSlider('force-cohesion',           'force.cohesion'),
     'force.max_speed':          bindSlider('force-max_speed',          'force.max_speed', (v) => v.toFixed(1)),
     'force.streak_length':      bindSlider('force-streak_length',      'force.streak_length', (v) => v.toFixed(3)),
+    'force.streak_width':       bindSlider('force-streak_width',       'force.streak_width', (v) => v.toFixed(3)),
     'emitter.radius':           bindSlider('emitter-radius',           'emitter.radius'),
     'emitter.motion_amp':       bindSlider('emitter-motion_amp',       'emitter.motion_amp'),
     'emitter.motion_speed':     bindSlider('emitter-motion_speed',     'emitter.motion_speed'),
@@ -1136,6 +1142,9 @@
       sliders['force.max_speed'].set(s.force.max_speed);
       if (s.force.streak_length !== undefined) {
         sliders['force.streak_length'].set(s.force.streak_length);
+      }
+      if (s.force.streak_width !== undefined) {
+        sliders['force.streak_width'].set(s.force.streak_width);
       }
     }
     // emitter pattern (phase 17)

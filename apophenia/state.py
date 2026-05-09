@@ -126,6 +126,14 @@ class ForceState(BaseModel):
     streak), 0.5 = dramatic flow lines. Default 0.06 gives a subtle
     motion-blur feel without overwhelming the cluster shape."""
 
+    streak_width: float = Field(0.012, ge=0.001, le=0.05)
+    """Phase-20: world-space half-width of each particle's ribbon
+    streak. The render shader extrudes the streak ±streak_width
+    perpendicular to (velocity × view direction), so the ribbon is
+    always view-facing. Default 0.012 ≈ 2 pixels at the default
+    camera distance of 5 — replaces the 1-pixel GL_LINES rendering
+    macOS used to cap us at."""
+
 
 class EmitterState(BaseModel):
     """Phase-17: how the 14 audio-channel emitters are arranged in 3D

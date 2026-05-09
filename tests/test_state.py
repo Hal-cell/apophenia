@@ -147,3 +147,21 @@ def test_visual_state_includes_emitter_default() -> None:
     s = VisualState()
     assert s.emitter.pattern == "ring"
     assert s.emitter.radius == 1.6
+
+
+def test_force_streak_width_validates() -> None:
+    """Phase-20: streak_width is the world-space half-width of the
+    billboard ribbon. Default 0.012 ≈ 2 px at the default camera
+    distance. Range [0.001, 0.05]."""
+    from apophenia.state import ForceState
+
+    f = ForceState()
+    assert f.streak_width == 0.012
+
+    with pytest.raises(ValidationError):
+        ForceState(streak_width=0.0)
+    with pytest.raises(ValidationError):
+        ForceState(streak_width=0.1)  # above 0.05 ceiling
+    # Boundary values OK.
+    ForceState(streak_width=0.001)
+    ForceState(streak_width=0.05)
