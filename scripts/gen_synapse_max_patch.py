@@ -1,27 +1,20 @@
 """Generate a comprehensive synapse Max patch.
 
-Routing approach (post-empirical):
-    Max's [route] doesn't reliably do hierarchical OSC matching —
-    `[route /synapse]` followed by `[route cv ...]` followed by
-    `[route 1 ...]` doesn't always strip / match the way the docs
-    suggest. We fall back to **full-address routing**: one route
-    object per category, with every channel's full address as a
-    matcher. e.g.
-
-        [route /synapse/rms/1 /synapse/rms/2 ... /synapse/rms/14]
-
-    Each outlet directly drives the corresponding channel's widget.
-    Block heartbeat and CLAP are single-outlet routes.
+Routing: a single [v8 synapse_router.js] parses every incoming OSC
+message and dispatches the payload to one of 10 outlets (one per
+category). For per-channel features the JS prepends the channel
+number to the value, then a small `[route 1 2 ... 14]` after each
+outlet demuxes by integer — which Max's [route] handles reliably,
+unlike chained slash-prefixed OSC routing.
 
 Layout (top to bottom):
   1. Title + status row (bundles received + block #)
-  2. [udpreceive 9000] — fans out to all per-category routes
-  3. AUDIO section: 3 routes (rms / centroid / onset) + 14 columns
-                    of (slider, centroid #, onset bang)
-  4. CV section: 2 routes (cv / cv_rate) + 14 columns of (flonum, flonum)
-  5. GATE section: 2 routes (gate / gate_event) + 14 columns of (toggle, bang)
-  6. SPECTRUM section: 1 route + umenu selector + 32-bin multislider
-  7. CLAP: 1 route + 512-bin multislider
+  2. [udpreceive 9000] → [v8 synapse_router.js]
+  3. AUDIO   : 3 [route 1..14]   + 14 columns of (slider, centroid #, onset bang)
+  4. CV      : 2 [route 1..14]   + 14 columns of (flonum, flonum)
+  5. GATE    : 2 [route 1..14]   + 14 columns of (toggle, bang)
+  6. SPECTRUM: umenu → v8 inlet1 + 32-bin multislider directly off v8
+  7. CLAP    : zl group 512 → 512-bin multislider
 
 Outputs JSON to stdout — pipe to .maxpat file.
 """
@@ -63,47 +56,45 @@ def add_line(src_id, src_outlet, dst_id, dst_inlet):
     lines.append(line(src_id, src_outlet, dst_id, dst_inlet))
 
 
-def add_channel_route(rid: str, x: float, y: float, category: str):
-    """Add a per-category route with all 14 channel addresses.
+def add_chmux(rid: str, x: float, y: float, src_id: str, src_outlet: int):
+    """Add a channel demuxer `[route 1 2 ... 14]` reading from the v8
+    output and emitting per-channel values on its 14 outlets.
 
-    e.g. category='rms' → `route /synapse/rms/1 ... /synapse/rms/14`.
-    Caller wires each outlet (0..N-1) to its channel widget; outlet N
-    is the "unmatched" outlet (we never wire it).
+    The 15th outlet (right-most) is the "no match" outlet — never wired.
     """
-    addresses = " ".join(f"/synapse/{category}/{i+1}" for i in range(N))
     add(box(
         id=rid, maxclass="newobj",
-        text=f"route {addresses}",
+        text="route 1 2 3 4 5 6 7 8 9 10 11 12 13 14",
         patching_rect=[x, y, GRID_W, 22.0],
         numinlets=1, numoutlets=N + 1,
         outlettype=[""] * (N + 1),
     ))
-    add_line("udpreceive", 0, rid, 0)
+    add_line(src_id, src_outlet, rid, 0)
 
 
 # --- Title + description ----------------------------------------------------
 add(box(
     id="title",
     maxclass="comment",
-    text="synapse · MaxMSP receiver\n14ch audio analyser → OSC bundles on UDP 9000",
-    patching_rect=[30.0, 15.0, 480.0, 40.0],
-    fontsize=14.0,
+    text="synapse · MaxMSP receiver  —  14ch audio analyser → OSC bundles on UDP 9000\n"
+         "OSC parsing happens in synapse_router.js; per-channel demux via [route 1..14].",
+    patching_rect=[30.0, 15.0, 700.0, 40.0],
+    fontsize=13.0,
     numinlets=1, numoutlets=0,
 ))
 
-# Status: bundles received counter (driven by /synapse/block which is
-# emitted exactly once per audio block / OSC bundle).
+# --- Status row (bundles received + block #) --------------------------------
 add(box(
     id="status-label",
     maxclass="comment",
     text="bundles received:",
-    patching_rect=[540.0, 20.0, 130.0, 20.0],
+    patching_rect=[760.0, 20.0, 130.0, 20.0],
     numinlets=1, numoutlets=0,
 ))
 add(box(
     id="status-count",
     maxclass="number",
-    patching_rect=[670.0, 20.0, 80.0, 22.0],
+    patching_rect=[890.0, 20.0, 80.0, 22.0],
     numinlets=1, numoutlets=2,
     outlettype=["", "bang"],
 ))
@@ -111,7 +102,7 @@ add(box(
     id="status-tick",
     maxclass="newobj",
     text="t b 0",
-    patching_rect=[670.0, 50.0, 50.0, 22.0],
+    patching_rect=[890.0, 50.0, 50.0, 22.0],
     numinlets=1, numoutlets=2,
     outlettype=["bang", "int"],
 ))
@@ -119,7 +110,7 @@ add(box(
     id="status-counter",
     maxclass="newobj",
     text="counter 0 999999",
-    patching_rect=[670.0, 78.0, 100.0, 22.0],
+    patching_rect=[890.0, 78.0, 100.0, 22.0],
     numinlets=5, numoutlets=4,
     outlettype=["int", "", "", "int"],
 ))
@@ -127,19 +118,19 @@ add(box(
     id="status-block-label",
     maxclass="comment",
     text="block #:",
-    patching_rect=[770.0, 20.0, 60.0, 20.0],
+    patching_rect=[990.0, 20.0, 60.0, 20.0],
     numinlets=1, numoutlets=0,
 ))
 add(box(
     id="status-block",
     maxclass="number",
-    patching_rect=[830.0, 20.0, 90.0, 22.0],
+    patching_rect=[1050.0, 20.0, 90.0, 22.0],
     numinlets=1, numoutlets=2,
     outlettype=["", "bang"],
 ))
 
 
-# --- udpreceive (single source) ---------------------------------------------
+# --- udpreceive + v8 router ------------------------------------------------
 add(box(
     id="udpreceive",
     maxclass="newobj",
@@ -148,42 +139,39 @@ add(box(
     numinlets=1, numoutlets=1,
     outlettype=[""],
 ))
-
-
-# --- Block heartbeat route → status counters --------------------------------
-# (One outlet — matches /synapse/block exactly. Drives both the displayed
-#  block# and the bundles-received counter, since the OSC schema guarantees
-#  exactly one /synapse/block per bundle.)
+# v8 with 2 inlets, 10 outlets — see synapse_router.js header for the
+# per-outlet contract.
 add(box(
-    id="rt-block", maxclass="newobj",
-    text="route /synapse/block",
-    patching_rect=[170.0, 75.0, 200.0, 22.0],
-    numinlets=1, numoutlets=2,
-    outlettype=["", ""],
+    id="v8-router",
+    maxclass="newobj",
+    text="v8 synapse_router.js",
+    patching_rect=[30.0, 105.0, 1080.0, 22.0],
+    numinlets=2, numoutlets=10,
+    outlettype=[""] * 10,
 ))
-add_line("udpreceive", 0, "rt-block", 0)
-add_line("rt-block", 0, "status-block", 0)
-add_line("rt-block", 0, "status-tick", 0)
+add_line("udpreceive", 0, "v8-router", 0)
+# Block heartbeat: v8 outlet 8 → both status-block AND the bundle counter
+# (one /synapse/block per bundle).
+add_line("v8-router", 8, "status-block", 0)
+add_line("v8-router", 8, "status-tick", 0)
 add_line("status-tick", 0, "status-counter", 0)
 add_line("status-counter", 0, "status-count", 0)
 
 
 # --- AUDIO section ----------------------------------------------------------
-AUDIO_ROUTES_TOP = 130
-GRID_TOP = 220
+AUDIO_MUX_TOP = 150
+GRID_TOP = 235
 
 add(box(
     id="hdr-meter", maxclass="comment",
     text="◆ AUDIO  RMS sliders · centroid # · onset bang",
-    patching_rect=[30.0, AUDIO_ROUTES_TOP - 22, 540.0, 20.0],
+    patching_rect=[30.0, AUDIO_MUX_TOP - 22, 540.0, 20.0],
     numinlets=1, numoutlets=0,
 ))
 
-# Three category routes, stacked. Each has 14 outlets driving the
-# matching channel column's widget.
-add_channel_route("rt-rms", 30, AUDIO_ROUTES_TOP, "rms")
-add_channel_route("rt-centroid", 30, AUDIO_ROUTES_TOP + 30, "centroid")
-add_channel_route("rt-onset", 30, AUDIO_ROUTES_TOP + 60, "onset")
+add_chmux("rt-rms", 30, AUDIO_MUX_TOP, "v8-router", 0)
+add_chmux("rt-centroid", 30, AUDIO_MUX_TOP + 28, "v8-router", 1)
+add_chmux("rt-onset", 30, AUDIO_MUX_TOP + 56, "v8-router", 2)
 
 # Per-channel widgets: label, slider (rms), centroid number, onset button
 for i in range(N):
@@ -237,18 +225,18 @@ for i in range(N):
 
 
 # --- CV section -------------------------------------------------------------
-CV_ROUTES_TOP = GRID_TOP + 290
-CV_TOP = CV_ROUTES_TOP + 60
+CV_MUX_TOP = GRID_TOP + 290
+CV_TOP = CV_MUX_TOP + 60
 
 add(box(
     id="hdr-cv", maxclass="comment",
     text="◆ CV  smoothed DC value · rate of change",
-    patching_rect=[30.0, CV_ROUTES_TOP - 22, 540.0, 20.0],
+    patching_rect=[30.0, CV_MUX_TOP - 22, 540.0, 20.0],
     numinlets=1, numoutlets=0,
 ))
 
-add_channel_route("rt-cv", 30, CV_ROUTES_TOP, "cv")
-add_channel_route("rt-cv-rate", 30, CV_ROUTES_TOP + 30, "cv_rate")
+add_chmux("rt-cv", 30, CV_MUX_TOP, "v8-router", 3)
+add_chmux("rt-cv-rate", 30, CV_MUX_TOP + 28, "v8-router", 4)
 
 for i in range(N):
     x = COL_X(i)
@@ -275,18 +263,18 @@ for i in range(N):
 
 
 # --- GATE section -----------------------------------------------------------
-GATE_ROUTES_TOP = CV_TOP + 100
-GATE_TOP = GATE_ROUTES_TOP + 60
+GATE_MUX_TOP = CV_TOP + 100
+GATE_TOP = GATE_MUX_TOP + 60
 
 add(box(
     id="hdr-gate", maxclass="comment",
     text="◆ GATE  state toggle · edge bang (any rising/falling edge)",
-    patching_rect=[30.0, GATE_ROUTES_TOP - 22, 540.0, 20.0],
+    patching_rect=[30.0, GATE_MUX_TOP - 22, 540.0, 20.0],
     numinlets=1, numoutlets=0,
 ))
 
-add_channel_route("rt-gate", 30, GATE_ROUTES_TOP, "gate")
-add_channel_route("rt-gate-event", 30, GATE_ROUTES_TOP + 30, "gate_event")
+add_chmux("rt-gate", 30, GATE_MUX_TOP, "v8-router", 5)
+add_chmux("rt-gate-event", 30, GATE_MUX_TOP + 28, "v8-router", 6)
 
 for i in range(N):
     x = COL_X(i)
@@ -313,20 +301,18 @@ for i in range(N):
     add_line("rt-gate-event", i, f"gate-edge-{i}", 0)
 
 
-# --- Spectrum (channel selector → big multislider) -------------------------
-SPEC_ROUTE_TOP = GATE_TOP + 110
-SPEC_TOP = SPEC_ROUTE_TOP + 30
+# --- Spectrum section -------------------------------------------------------
+# JS does the channel selection — umenu → v8 inlet 1, multislider hangs
+# directly off v8 outlet 7 (only the selected channel emits there).
+SPEC_TOP = GATE_TOP + 110
 
 add(box(
     id="hdr-spec", maxclass="comment",
     text="◆ SPECTRUM  pick a channel (only audio-role channels emit) · 32 log-spaced bins · ~30Hz",
-    patching_rect=[30.0, SPEC_ROUTE_TOP - 22, 700.0, 20.0],
+    patching_rect=[30.0, SPEC_TOP - 22, 700.0, 20.0],
     numinlets=1, numoutlets=0,
 ))
 
-add_channel_route("rt-spectrum", 30, SPEC_ROUTE_TOP, "spectrum")
-
-# umenu lets the user pick which channel's spectrum to view.
 add(box(
     id="spec-menu", maxclass="umenu",
     patching_rect=[30.0, SPEC_TOP, 100.0, 22.0],
@@ -336,12 +322,15 @@ add(box(
 ))
 add(box(
     id="spec-menu-label", maxclass="comment",
-    text="← select channel",
-    patching_rect=[140.0, SPEC_TOP + 2, 200.0, 18.0],
+    text="← select channel  (sent to v8 inlet 1; JS converts 0-based umenu int to 1-based ch)",
+    patching_rect=[140.0, SPEC_TOP + 2, 600.0, 18.0],
     numinlets=1, numoutlets=0,
 ))
+# Wire umenu's int outlet → v8 inlet 1
+add_line("spec-menu", 0, "v8-router", 1)
 
-# Multislider receiving the spectrum data.
+# Multislider: receives 32 floats every ~30Hz from v8 outlet 7,
+# already filtered to the selected channel.
 add(box(
     id="spec-multi", maxclass="multislider",
     patching_rect=[30.0, SPEC_TOP + 35, 1080.0, 120.0],
@@ -354,72 +343,18 @@ add(box(
     setstyle=0,
     candicable=0,
 ))
-
-# Per-channel gate: only let through messages from the selected channel.
-# Each spec-gate is opened/closed by a [sel i] from umenu.
-for i in range(N):
-    x = 30 + (i // 2) * 60
-    y = SPEC_TOP + 165 + (i % 2) * 70
-    add(box(
-        id=f"spec-sel-{i}", maxclass="newobj",
-        text=f"sel {i}",
-        patching_rect=[x, y, 40.0, 22.0],
-        numinlets=2, numoutlets=2, outlettype=["bang", ""],
-    ))
-    add(box(
-        id=f"spec-t-{i}", maxclass="newobj",
-        text="t 1",
-        patching_rect=[x, y + 24, 30.0, 22.0],
-        numinlets=1, numoutlets=1, outlettype=["int"],
-    ))
-    add(box(
-        id=f"spec-gate-{i}", maxclass="newobj",
-        text="gate",
-        patching_rect=[x, y + 48, 50.0, 22.0],
-        numinlets=2, numoutlets=1, outlettype=[""],
-    ))
-
-    add_line("spec-menu", 0, f"spec-sel-{i}", 0)
-    add_line(f"spec-sel-{i}", 0, f"spec-t-{i}", 0)
-    add_line(f"spec-t-{i}", 0, f"spec-gate-{i}", 0)
-    # Spectrum messages for this channel feed the gate's right inlet.
-    add_line("rt-spectrum", i, f"spec-gate-{i}", 1)
-    # Open gate output → multislider.
-    add_line(f"spec-gate-{i}", 0, "spec-multi", 0)
-
-# Broadcast "close all" from umenu so non-matching gates close before the
-# matching one opens.
-add(box(
-    id="spec-closer", maxclass="newobj", text="t 0",
-    patching_rect=[150.0, SPEC_TOP + 165, 30.0, 22.0],
-    numinlets=1, numoutlets=1, outlettype=["int"],
-))
-add_line("spec-menu", 0, "spec-closer", 0)
-for i in range(N):
-    add_line("spec-closer", 0, f"spec-gate-{i}", 0)
+add_line("v8-router", 7, "spec-multi", 0)
 
 
 # --- CLAP -------------------------------------------------------------------
-CLAP_ROUTE_TOP = SPEC_TOP + 320
-CLAP_TOP = CLAP_ROUTE_TOP + 30
+CLAP_TOP = SPEC_TOP + 175
 
 add(box(
     id="hdr-clap", maxclass="comment",
     text="◆ CLAP  512-D audio embedding (slow tier ~1Hz, only when --clap is on)",
-    patching_rect=[30.0, CLAP_ROUTE_TOP - 22, 700.0, 20.0],
+    patching_rect=[30.0, CLAP_TOP - 22, 700.0, 20.0],
     numinlets=1, numoutlets=0,
 ))
-
-# Single-address route — outlet 0 emits the message body (all 512 floats
-# + the model-name string).
-add(box(
-    id="rt-clap", maxclass="newobj",
-    text="route /synapse/clap",
-    patching_rect=[30.0, CLAP_ROUTE_TOP, 200.0, 22.0],
-    numinlets=1, numoutlets=2,
-    outlettype=["", ""],
-))
-add_line("udpreceive", 0, "rt-clap", 0)
 
 add(box(
     id="clap-multi", maxclass="multislider",
@@ -433,27 +368,29 @@ add(box(
     setstyle=0,
     candicable=0,
 ))
-# /synapse/clap message payload is 512 floats + 1 string. zl group 512
-# pulls just the floats.
+# v8 outlet 9 emits a 513-element list (512 floats + model name). zl
+# group 512 keeps just the floats; the model name falls off as the
+# 513th element wouldn't fit.
 add(box(
     id="clap-zl", maxclass="newobj",
     text="zl group 512",
     patching_rect=[30.0, CLAP_TOP + 90, 130.0, 22.0],
     numinlets=2, numoutlets=2, outlettype=["", ""],
 ))
-add_line("rt-clap", 0, "clap-zl", 0)
+add_line("v8-router", 9, "clap-zl", 0)
 add_line("clap-zl", 0, "clap-multi", 0)
 
 
-# --- Footer info ------------------------------------------------------------
+# --- Footer -----------------------------------------------------------------
 add(box(
     id="footer", maxclass="comment",
     text=(
-        "Forward to Unreal:  add a [udpsend <unreal-host> <unreal-port>] and tap any of the\n"
-        "per-channel route outlets above. /synapse/cv/N for slow control, /gate/N for triggers,\n"
-        "/spectrum/N for the bin lists. Full schema: docs/OSC_SCHEMA.md in the repo."
+        "Forward to Unreal:  add a [udpsend <unreal-host> <unreal-port>] and tap any of\n"
+        "the [route 1..14] outlets above (or the v8 category outlets directly).\n"
+        "/synapse/cv/N for slow control, /gate/N for triggers, /spectrum/N for the bin lists.\n"
+        "Full schema: docs/OSC_SCHEMA.md."
     ),
-    patching_rect=[30.0, CLAP_TOP + 130, 1080.0, 60.0],
+    patching_rect=[30.0, CLAP_TOP + 130, 1080.0, 70.0],
     numinlets=1, numoutlets=0,
 ))
 
@@ -467,7 +404,7 @@ patch = {
             "architecture": "x64", "modernui": 1,
         },
         "classnamespace": "box",
-        "rect": [60.0, 60.0, 1200.0, max(CLAP_TOP + 220, 1200.0)],
+        "rect": [60.0, 60.0, 1200.0, max(CLAP_TOP + 220, 1100.0)],
         "bglocked": 0,
         "openinpresentation": 0,
         "default_fontsize": 11.0,
@@ -490,10 +427,9 @@ patch = {
         "enablevscroll": 1,
         "devicewidth": 0.0,
         "description": "synapse — comprehensive 14-channel OSC receiver. "
-                       "Reads bundles on UDP 9000, displays RMS / centroid / "
-                       "onset / CV / gate / spectrum / CLAP for every channel. "
-                       "Uses full-address routing (one route object per "
-                       "category, /synapse/<feat>/<ch> per outlet).",
+                       "Reads bundles on UDP 9000, parses via "
+                       "synapse_router.js (v8), demuxes by integer "
+                       "channel via [route 1..14] per category.",
         "digest": "",
         "tags": "",
         "style": "",

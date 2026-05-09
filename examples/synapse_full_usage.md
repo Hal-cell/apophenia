@@ -10,24 +10,39 @@ shorter and easier to read.
 ## What's in the patch
 
 ```
-[udpreceive 9000]   ← Max 8+ auto-parses incoming OSC bundles
-   │
-   ▼
-[route /synapse]
-   │
-   ▼
-[route cv cv_rate gate gate_event rms peak centroid onset spectrum block clap]
-   │   │       │    │          │   │    │        │     │        │     │
-   ▼   ▼       ▼    ▼          ▼   ▼    ▼        ▼     ▼        ▼     ▼
-   per-channel routers (14 outlets each, /1 .. /14)
-   │
-   └→ widgets organised in five sections (top to bottom):
-        ◆ AUDIO    — 14 RMS sliders + centroid number + onset bang
-        ◆ CV       — 14 value flonums + rate flonums
-        ◆ GATE     — 14 toggles + edge buttons
-        ◆ SPECTRUM — channel selector + 32-bin multislider
-        ◆ CLAP     — 512-bin multislider (only when --clap is on)
+[udpreceive 9000]               [umenu ch1..ch14]
+       │                              │
+       ▼                              ▼ (selected channel idx)
+       [v8 synapse_router.js]
+       │ │ │ │ │ │ │ │ │ │
+       v v v v v v v v v v
+      rms cn ons cv cvr gt gte spm blk clp
+       │  │  │  │  │  │  │  │  │  │
+       │  │  │  │  │  │  │  │  │  └→ [zl group 512] → 512-bar multislider
+       │  │  │  │  │  │  │  │  └→ block# + bundle counter
+       │  │  │  │  │  │  │  └→ 32-bar multislider (already filtered to selected ch by JS)
+       │  │  │  │  │  │  └→ [route 1..14] → 14 edge bangs
+       │  │  │  │  │  └→ [route 1..14] → 14 toggles
+       │  │  │  │  └→ [route 1..14] → 14 cv-rate flonums
+       │  │  │  └→ [route 1..14] → 14 cv flonums
+       │  │  └→ [route 1..14] → 14 onset bangs (via > 0.5 / sel 1)
+       │  └→ [route 1..14] → 14 centroid numbers
+       └→ [route 1..14] → 14 RMS sliders
 ```
+
+OSC parsing happens in `synapse_router.js` (loaded by the `[v8]`
+object). Max's own `[route]` doesn't reliably do hierarchical
+matching across chained slash-prefixed args — so we parse every
+address once in JS, then emit `<channel-int> <value>` lists on a
+per-category outlet. The downstream `[route 1 2 ... 14]` matches
+plain integers, which Max handles fine.
+
+Per-section widgets (top to bottom):
+- **◆ AUDIO** — 14 RMS sliders + centroid number + onset bang
+- **◆ CV** — 14 value flonums + rate flonums
+- **◆ GATE** — 14 toggles + edge buttons
+- **◆ SPECTRUM** — channel selector → 32-bin multislider (filtered in JS)
+- **◆ CLAP** — 512-bin multislider (only when `--clap` is on)
 
 The status row at the top shows:
 - `bundles received` — running count of OSC packets that arrived
