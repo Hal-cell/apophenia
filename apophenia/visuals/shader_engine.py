@@ -62,14 +62,26 @@ def centroid_to_hue(hz: float) -> float:
 
 # ---- Layer configuration ---- #
 
-# Phase 9 preset roster. Each shader is a self-contained fragment-only
-# preset using the shared uniform interface (see `shaders/*.frag`):
-#   flow    — domain-warped FBM noise field; organic mist
-#   prism   — rotating polygon SDF; hard-edged colour shards
-#   plasma  — slow-flowing FBM blob; lava-lamp pad texture
-#   shock   — concentric audio-shock waves; great on percussion
-#   lattice — animated voronoi cells; bioluminescent grid
-PRESETS = ("flow", "prism", "plasma", "shock", "lattice")
+# Preset roster. Each shader is a self-contained fragment-only preset
+# using the shared uniform interface (see `shaders/*.frag`).
+# All seven are grounded in a maths or physics model:
+#   flow         — domain-warped FBM noise field; organic mist
+#   prism        — rotating regular-polygon SDF; hard-edged colour shards
+#   plasma       — 3-octave FBM metaball; lava-lamp pad texture
+#   shock        — interleaved radial sin waves; concentric audio shocks
+#   lattice      — animated voronoi diagram; bioluminescent grid
+#   curl_noise   — curl of 2D noise (incompressible flow); smoke / vapor
+#   quasicrystal — sum of N cosine plane waves at golden-angle
+#                  increments; Penrose-style aperiodic interference
+PRESETS = (
+    "flow",
+    "prism",
+    "plasma",
+    "shock",
+    "lattice",
+    "curl_noise",
+    "quasicrystal",
+)
 
 
 @dataclass
@@ -83,32 +95,28 @@ class Layer:
     channel: int
 
 
-# Default 14-layer mapping for phase 9. Each preset is reused 2-3×
-# across 14 channels so visually-similar layers don't pile on top of
-# each other.
-#
-# Ch1-3:   percussion-flavoured (kick / bass / lead) — punchy presets
-#          that read well on transients.
-# Ch4:     pad — smooth flowing surface for sustained tones.
-# Ch5-8:   percussion / FX channels — mix of organic (flow) and
-#          structural (lattice / shock) so different rhythms layer.
-# Ch9-11:  FX bursts — onset-reactive, expressive.
-# Ch12-14: slow CV / drones — quiet smooth presets that don't over-fire.
+# Default 14-layer mapping. With 7 presets × 14 channels we land at
+# exactly two channels per preset, balanced. Channel groups roughly:
+#   Ch1-3:   percussion-flavoured (kick / bass / lead)
+#   Ch4:     pad — smooth flowing surface
+#   Ch5-8:   percussion / FX channels — mix of organic + structural
+#   Ch9-11:  FX bursts — onset-reactive geometry
+#   Ch12-14: slow CV / drones — smooth, low-energy textures
 DEFAULT_LAYERS: list[Layer] = [
-    Layer(preset="shock",   channel=0),    # kick     → radial pulse
-    Layer(preset="prism",   channel=1),    # bass     → rotating polygon
-    Layer(preset="lattice", channel=2),    # lead     → voronoi grid
-    Layer(preset="plasma",  channel=3),    # pad      → smooth plasma
-    Layer(preset="flow",    channel=4),    # perc     → fbm mist
-    Layer(preset="flow",    channel=5),    # perc
-    Layer(preset="lattice", channel=6),    # perc
-    Layer(preset="shock",   channel=7),    # perc
-    Layer(preset="shock",   channel=8),    # FX
-    Layer(preset="prism",   channel=9),    # FX
-    Layer(preset="lattice", channel=10),   # FX
-    Layer(preset="plasma",  channel=11),   # CV / drone
-    Layer(preset="plasma",  channel=12),   # CV / drone
-    Layer(preset="flow",    channel=13),   # CV / drone
+    Layer(preset="shock",         channel=0),    # kick → radial pulse
+    Layer(preset="prism",         channel=1),    # bass → rotating polygon
+    Layer(preset="quasicrystal",  channel=2),    # lead → aperiodic lattice
+    Layer(preset="plasma",        channel=3),    # pad  → smooth plasma
+    Layer(preset="curl_noise",    channel=4),    # perc → incompressible flow
+    Layer(preset="flow",          channel=5),    # perc → fbm mist
+    Layer(preset="lattice",       channel=6),    # perc → voronoi
+    Layer(preset="shock",         channel=7),    # perc → radial pulse
+    Layer(preset="quasicrystal",  channel=8),    # FX   → aperiodic lattice
+    Layer(preset="prism",         channel=9),    # FX   → rotating polygon
+    Layer(preset="lattice",       channel=10),   # FX   → voronoi
+    Layer(preset="plasma",        channel=11),   # drone → smooth plasma
+    Layer(preset="curl_noise",    channel=12),   # drone → incompressible flow
+    Layer(preset="flow",          channel=13),   # drone → fbm mist
 ]
 
 
@@ -394,6 +402,16 @@ class ApopheniaWindow(mglw.WindowConfig):
         if frame_time > 0:
             self._fps_min = min(self._fps_min, 1.0 / frame_time)
 
+        # Resolve the *current* render-target size. `self.window_size`
+        # is a class-attribute that records the **initial requested**
+        # size only — it never updates when the user drags the window.
+        # `self.wnd.buffer_size` is the live framebuffer size (handles
+        # HiDPI: physical pixels, not logical points). On Retina that's
+        # ~2× the logical window size, which is what the GL viewport
+        # actually needs. The Compositor's offscreen FBO is recreated
+        # lazily when this size changes, so resize Just Works.
+        size: tuple[int, int] = tuple(self.wnd.buffer_size)  # type: ignore[assignment]
+
         state = self._state_bus_ref.get() if self._state_bus_ref is not None else None
 
         if state is not None and state.transport.freeze:
@@ -410,14 +428,14 @@ class ApopheniaWindow(mglw.WindowConfig):
             self._frozen_time = time_s
 
         # Pass 1 — shader engine into offscreen FBO.
-        fbo = self.compositor.offscreen_fbo(self.window_size)
+        fbo = self.compositor.offscreen_fbo(size)
         fbo.use()
-        self.ctx.viewport = (0, 0, *self.window_size)
-        self.engine.render(features, render_time, self.window_size, state=state)
+        self.ctx.viewport = (0, 0, *size)
+        self.engine.render(features, render_time, size, state=state)
 
         # Pass 2 — composite post-FX to the window.
         self.ctx.screen.use()
-        self.ctx.viewport = (0, 0, *self.window_size)
+        self.ctx.viewport = (0, 0, *size)
         if state is not None:
             saturation = state.palette.saturation
             glitch = state.fx.glitch
