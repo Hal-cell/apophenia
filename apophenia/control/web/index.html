@@ -20,7 +20,6 @@
     --hot: #d8624e;
     --slot-empty: #1a1a1a;
     --slot-full: #2a2418;
-    --slot-active: #fbf2d4;
   }
   * { box-sizing: border-box; }
   body {
@@ -138,8 +137,6 @@
     border-top: 1px solid var(--border);
   }
 
-  /* ----- Control panels ----- */
-
   .panel {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -197,28 +194,12 @@
     cursor: grab;
     border: none;
   }
-  .ctrl-row input[type="range"]:active::-webkit-slider-thumb {
-    cursor: grabbing;
-  }
-
-  /* Text panel */
-  #prompt {
-    width: 100%; min-height: 60px;
-    background: var(--panel-2);
-    border: 1px solid var(--border-2);
-    border-radius: 3px;
-    color: var(--text);
-    font-family: inherit; font-size: 12px;
-    padding: 8px 10px;
-    resize: vertical;
-  }
-  #prompt:focus { outline: none; border-color: var(--accent); }
+  .ctrl-row input[type="range"]:active::-webkit-slider-thumb { cursor: grabbing; }
 
   .preset-grid {
     display: grid;
     grid-template-columns: repeat(8, 1fr);
     gap: 4px;
-    margin-top: 10px;
   }
   .preset {
     background: var(--slot-empty);
@@ -241,9 +222,7 @@
     color: var(--text);
     border-color: #4a3a1a;
   }
-  .preset .num {
-    font-size: 8px; color: var(--text-dim); margin-bottom: 2px;
-  }
+  .preset .num { font-size: 8px; color: var(--text-dim); margin-bottom: 2px; }
   .preset.full .num { color: var(--accent); }
   .preset .lbl {
     font-size: 9px;
@@ -260,7 +239,6 @@
     font-family: inherit;
   }
 
-  /* Mood XY pad */
   .mood-pad {
     position: relative;
     background: var(--panel-2);
@@ -271,9 +249,7 @@
     cursor: crosshair;
     overflow: hidden;
   }
-  .mood-pad .axis-h, .mood-pad .axis-v {
-    position: absolute; background: var(--border-2);
-  }
+  .mood-pad .axis-h, .mood-pad .axis-v { position: absolute; background: var(--border-2); }
   .mood-pad .axis-h { left: 0; right: 0; top: 50%; height: 1px; }
   .mood-pad .axis-v { top: 0; bottom: 0; left: 50%; width: 1px; }
   .mood-pad .dot {
@@ -296,7 +272,6 @@
   .mood-pad .label.l { top: 50%; left: 4px; transform: translateY(-50%); }
   .mood-pad .label.r { top: 50%; right: 4px; transform: translateY(-50%); }
 
-  /* Toggles + buttons */
   .toggle-row {
     display: flex; align-items: center; gap: 10px;
     padding: 4px 0; font-size: 11px;
@@ -340,9 +315,7 @@
   .btn:hover { border-color: var(--accent); }
   .btn.danger:hover { border-color: var(--hot); color: var(--hot); }
 
-  .stepper {
-    display: flex; align-items: center; gap: 6px;
-  }
+  .stepper { display: flex; align-items: center; gap: 6px; }
   .stepper button {
     width: 22px; height: 22px;
     background: var(--panel-2);
@@ -353,12 +326,8 @@
     line-height: 1;
   }
   .stepper button:hover { border-color: var(--accent); }
-  .stepper .val {
-    min-width: 24px; text-align: center;
-    font-size: 11px; color: var(--text);
-  }
+  .stepper .val { min-width: 24px; text-align: center; font-size: 11px; color: var(--text); }
 
-  /* Channels panel — 14 mini-sliders side by side */
   .channel-grid {
     display: grid;
     grid-template-columns: repeat(14, 1fr);
@@ -367,12 +336,8 @@
   .channel-cell {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
   }
-  .channel-cell .lbl {
-    font-size: 9px; color: var(--text-dim);
-    text-transform: uppercase;
-  }
+  .channel-cell .lbl { font-size: 9px; color: var(--text-dim); text-transform: uppercase; }
   .channel-cell input[type="range"] {
-    /* vertical slider via rotation */
     -webkit-appearance: none;
     appearance: none;
     width: 80px; height: 4px;
@@ -396,10 +361,7 @@
     border-radius: 50%;
     border: none;
   }
-  .channel-cell .val {
-    font-size: 9px; color: var(--text);
-    font-variant-numeric: tabular-nums;
-  }
+  .channel-cell .val { font-size: 9px; color: var(--text); font-variant-numeric: tabular-nums; }
 
   footer {
     padding: 8px 24px;
@@ -409,14 +371,12 @@
   }
   footer code { color: var(--accent); font-family: inherit; }
 
-  @media (max-width: 1100px) {
-    .panel.fill { flex: 1 1 100%; min-width: 100%; }
-  }
+  @media (max-width: 1100px) { .panel.fill { flex: 1 1 100%; min-width: 100%; } }
 </style>
 </head>
 <body>
   <header>
-    <h1>apophenia <span class="dim">· phase 5 · control</span></h1>
+    <h1>apophenia <span class="dim">· control</span></h1>
     <div id="status">
       <div class="field"><span class="label">ws:</span><span id="ws-state" class="value err">disconnected</span></div>
       <div class="field"><span class="label">source:</span><span id="src-name" class="value">—</span></div>
@@ -425,7 +385,6 @@
       <div class="field"><span class="label">blocks:</span><span id="src-count" class="value">0</span></div>
       <div class="field"><span class="label">ui fps:</span><span id="ui-fps" class="value">0</span></div>
       <div class="field"><span class="label">clap:</span><span id="clap-state" class="value">off</span></div>
-      <div class="field"><span class="label">ai:</span><span id="ai-state" class="value">off</span></div>
     </div>
   </header>
 
@@ -440,44 +399,11 @@
       <div id="clap-heat"></div>
     </section>
 
-    <!-- Top row of control panels: Text/Presets + Blends/Mood -->
     <div class="row">
       <section class="panel fill">
-        <h2><span class="accent">text</span> · prompt &amp; presets</h2>
-        <textarea id="prompt" placeholder="abstract liquid form, subtle iridescent surface…"></textarea>
-        <div class="preset-grid" id="preset-grid"></div>
-        <div class="preset-help">
-          <kbd>click</kbd> recall ·
-          <kbd>shift+click</kbd> save current ·
-          <kbd>alt+click</kbd> clear
-        </div>
-      </section>
-
-      <section class="panel fill">
-        <h2><span class="accent">blends</span> · ai mix &amp; mood</h2>
-        <div class="ctrl-row">
-          <span class="ctrl-label">audio↔text</span>
-          <input type="range" id="blend-audio_text" min="0" max="1" step="0.01" value="0.5">
-          <span class="ctrl-value" id="blend-audio_text-v">0.50</span>
-        </div>
-        <div class="ctrl-row">
-          <span class="ctrl-label">clap↔clip</span>
-          <input type="range" id="blend-clap_clip" min="0" max="1" step="0.01" value="0.5">
-          <span class="ctrl-value" id="blend-clap_clip-v">0.50</span>
-        </div>
-        <div class="ctrl-row">
-          <span class="ctrl-label">shader↔ai</span>
-          <input type="range" id="blend-shader_ai" min="0" max="1" step="0.01" value="0.5">
-          <span class="ctrl-value" id="blend-shader_ai-v">0.50</span>
-        </div>
-        <div class="ctrl-row">
-          <span class="ctrl-label">cfg</span>
-          <input type="range" id="cfg" min="1" max="12" step="0.1" value="5.0">
-          <span class="ctrl-value" id="cfg-v">5.0</span>
-        </div>
-
-        <div class="toggle-row" style="margin-top: 8px;">
-          <span class="ctrl-label">mood follows audio</span>
+        <h2><span class="accent">mood</span> · 2D macro</h2>
+        <div class="toggle-row">
+          <span class="ctrl-label">follow audio</span>
           <div id="mood-follow" class="toggle on" role="switch"></div>
         </div>
         <div class="mood-pad" id="mood-pad">
@@ -490,16 +416,7 @@
           <div class="dot follow" id="mood-dot"></div>
         </div>
       </section>
-    </div>
 
-    <!-- Channel weights (full width) -->
-    <section class="panel" style="width: 100%;">
-      <h2><span class="accent">channels</span> · per-channel weights (1.0 = full, 0.0 = mute)</h2>
-      <div class="channel-grid" id="channel-grid"></div>
-    </section>
-
-    <!-- Palette + FX + Transport row -->
-    <div class="row">
       <section class="panel fill">
         <h2><span class="accent">palette</span></h2>
         <div class="ctrl-row">
@@ -542,12 +459,23 @@
           <span class="ctrl-label">freeze</span>
           <div id="transport-freeze" class="toggle" role="switch"></div>
         </div>
-        <div class="toggle-row">
-          <span class="ctrl-label">clear shader buffers</span>
-          <button class="btn danger" id="btn-clear">clear</button>
-        </div>
       </section>
     </div>
+
+    <section class="panel" style="width: 100%;">
+      <h2><span class="accent">channels</span> · per-channel weights (1.0 = full, 0.0 = mute)</h2>
+      <div class="channel-grid" id="channel-grid"></div>
+    </section>
+
+    <section class="panel" style="width: 100%;">
+      <h2><span class="accent">presets</span> · 16 slots</h2>
+      <div class="preset-grid" id="preset-grid"></div>
+      <div class="preset-help">
+        <kbd>click</kbd> recall ·
+        <kbd>shift+click</kbd> save current ·
+        <kbd>alt+click</kbd> clear
+      </div>
+    </section>
   </main>
 
   <footer>
@@ -559,20 +487,13 @@
 
 <script>
 (() => {
-  // ---------------------------------------------------------------- //
-  //  Constants                                                       //
-  // ---------------------------------------------------------------- //
   const N = 14;
   const N_PRESETS = 16;
   const FLOOR_DB = -60.0;
   const PEAK_HOLD_MS = 300;
-
   const HUE_LO = 30, HUE_HI = 200;
   const CENTROID_LO = 50.0, CENTROID_HI = 12000.0;
 
-  // ---------------------------------------------------------------- //
-  //  DOM: meters + status                                            //
-  // ---------------------------------------------------------------- //
   const meters = document.getElementById('meters');
   const cells = [];
   for (let i = 0; i < N; i++) {
@@ -607,7 +528,6 @@
   const clapState = document.getElementById('clap-state');
   const clapMeta = document.getElementById('clap-meta');
   const clapHeat = document.getElementById('clap-heat');
-  const aiState = document.getElementById('ai-state');
 
   const CLAP_BARS = 32;
   const clapCells = [];
@@ -618,22 +538,13 @@
     clapHeat.appendChild(b);
     clapCells.push(b);
   }
-  let lastClapUpdate = 0;
 
-  // ---------------------------------------------------------------- //
-  //  State sync — outbound (PATCH) and inbound (WS)                  //
-  // ---------------------------------------------------------------- //
-  // Tracks which control the user is actively manipulating; while a
-  // control is "dirty" we DON'T overwrite it from the WS state echo.
-  // Otherwise dragging a slider would jitter against the server's
-  // round-trip echo.
   const dirty = new Set();
   function markDirty(key, ms = 250) {
     dirty.add(key);
     setTimeout(() => dirty.delete(key), ms);
   }
 
-  // Coalesce many rapid-fire patches into one fetch.
   let pendingPatch = {};
   let patchTimer = null;
   function patchState(partial) {
@@ -651,9 +562,18 @@
     }, 30);
   }
 
-  // ---------------------------------------------------------------- //
-  //  Sliders                                                         //
-  // ---------------------------------------------------------------- //
+  function keyToPartial(key, value) {
+    const parts = key.split('.');
+    const root = {};
+    let cur = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = value;
+    return root;
+  }
+
   function bindSlider(id, key, fmt = (v) => v.toFixed(2), parse = parseFloat) {
     const el = document.getElementById(id);
     const valEl = document.getElementById(id + '-v');
@@ -673,33 +593,13 @@
     };
   }
 
-  // "blend.audio_text" → {blend: {audio_text: v}}
-  function keyToPartial(key, value) {
-    const parts = key.split('.');
-    const root = {};
-    let cur = root;
-    for (let i = 0; i < parts.length - 1; i++) {
-      cur[parts[i]] = {};
-      cur = cur[parts[i]];
-    }
-    cur[parts[parts.length - 1]] = value;
-    return root;
-  }
-
   const sliders = {
-    'blend.audio_text': bindSlider('blend-audio_text', 'blend.audio_text'),
-    'blend.clap_clip':  bindSlider('blend-clap_clip',  'blend.clap_clip'),
-    'blend.shader_ai':  bindSlider('blend-shader_ai',  'blend.shader_ai'),
-    'cfg':              bindSlider('cfg', 'cfg', (v) => v.toFixed(1)),
     'palette.hue':        bindSlider('palette-hue',        'palette.hue'),
     'palette.saturation': bindSlider('palette-saturation', 'palette.saturation'),
     'fx.glitch':    bindSlider('fx-glitch',    'fx.glitch'),
     'fx.chromatic': bindSlider('fx-chromatic', 'fx.chromatic'),
   };
 
-  // ---------------------------------------------------------------- //
-  //  Channel-weight sliders (14 of them)                             //
-  // ---------------------------------------------------------------- //
   const chGrid = document.getElementById('channel-grid');
   const chSliders = [];
   for (let i = 0; i < N; i++) {
@@ -716,7 +616,6 @@
       const v = parseFloat(inp.value);
       valEl.textContent = v.toFixed(2);
       markDirty('channel_weight');
-      // Send the entire array — server replaces non-dict fields wholesale.
       const arr = chSliders.map(s => parseFloat(s.input.value));
       patchState({ channel_weight: arr });
     });
@@ -731,9 +630,6 @@
     }
   }
 
-  // ---------------------------------------------------------------- //
-  //  Toggles + buttons                                               //
-  // ---------------------------------------------------------------- //
   function bindToggle(id, key) {
     const el = document.getElementById(id);
     el.addEventListener('click', () => {
@@ -753,7 +649,6 @@
   const toggleFollow = bindToggle('mood-follow', 'mood.follow_audio');
   const toggleFreeze = bindToggle('transport-freeze', 'transport.freeze');
 
-  // Kaleidoscope stepper
   const kalVal = document.getElementById('fx-kaleidoscope-v');
   let kalCur = 1;
   function setKal(n) {
@@ -771,46 +666,22 @@
     patchState({ fx: { kaleidoscope: kalCur } });
   });
 
-  // Clear button — for now just toggle freeze briefly, and re-PATCH
-  // a transport.clear bang once that protocol lands. V1: nudge freeze.
-  document.getElementById('btn-clear').addEventListener('click', () => {
-    // No clear endpoint yet in V1; visual-pipeline phase 7 will wire this.
-    // For now, just briefly flash freeze to give user feedback.
-    toggleFreeze.el.classList.add('on');
-    markDirty('transport.freeze');
-    patchState({ transport: { freeze: true } });
-    setTimeout(() => {
-      toggleFreeze.el.classList.remove('on');
-      patchState({ transport: { freeze: false } });
-    }, 120);
-  });
-
-  // ---------------------------------------------------------------- //
-  //  Mood XY pad                                                     //
-  // ---------------------------------------------------------------- //
   const moodPad = document.getElementById('mood-pad');
   const moodDot = document.getElementById('mood-dot');
-  let moodFollowing = true;
 
   function updateMoodDot(valence, arousal, follow) {
-    // valence ∈ [-1, 1] → x ∈ [0, 1]; arousal ∈ [-1, 1] → y (top = high)
     const x = (valence + 1) / 2 * 100;
     const y = (1 - (arousal + 1) / 2) * 100;
     moodDot.style.left = x + '%';
     moodDot.style.top = y + '%';
     moodDot.classList.toggle('follow', follow);
   }
-
   function moodFromEvent(ev) {
     const r = moodPad.getBoundingClientRect();
     const x = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
     const y = Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height));
-    return {
-      valence: x * 2 - 1,
-      arousal: -(y * 2 - 1),
-    };
+    return { valence: x * 2 - 1, arousal: -(y * 2 - 1) };
   }
-
   let moodDragging = false;
   moodPad.addEventListener('pointerdown', (ev) => {
     moodDragging = true;
@@ -829,30 +700,10 @@
     const { valence, arousal } = moodFromEvent(ev);
     updateMoodDot(valence, arousal, false);
     markDirty('mood');
-    // dragging the pad turns off follow_audio
-    moodFollowing = false;
     toggleFollow.el.classList.remove('on');
-    patchState({
-      mood: { valence, arousal, follow_audio: false },
-    });
+    patchState({ mood: { valence, arousal, follow_audio: false } });
   }
 
-  // ---------------------------------------------------------------- //
-  //  Prompt textarea                                                 //
-  // ---------------------------------------------------------------- //
-  const prompt = document.getElementById('prompt');
-  let promptTimer = null;
-  prompt.addEventListener('input', () => {
-    markDirty('text.prompt', 600);
-    clearTimeout(promptTimer);
-    promptTimer = setTimeout(() => {
-      patchState({ text: { prompt: prompt.value } });
-    }, 250);
-  });
-
-  // ---------------------------------------------------------------- //
-  //  Preset bank                                                     //
-  // ---------------------------------------------------------------- //
   const presetGrid = document.getElementById('preset-grid');
   const presetEls = [];
   for (let i = 0; i < N_PRESETS; i++) {
@@ -902,13 +753,7 @@
   async function recallPreset(i) {
     try {
       const r = await fetch(`/api/presets/${i}/recall`, { method: 'POST' });
-      if (r.ok) {
-        // returned state will arrive via /ws stream and drive UI sync.
-        // Mark all controls clean so the echo can populate them.
-        dirty.clear();
-      } else if (r.status === 404) {
-        // empty slot: ignore silently or flash; for now just no-op
-      }
+      if (r.ok) dirty.clear();
     } catch (e) { /* ignore */ }
   }
   async function clearPreset(i) {
@@ -920,50 +765,27 @@
   }
   refreshPresets();
 
-  // ---------------------------------------------------------------- //
-  //  Inbound state echo from /ws                                     //
-  // ---------------------------------------------------------------- //
   function applyState(s) {
     if (!s) return;
-    // text
-    if (s.text && !dirty.has('text.prompt') && document.activeElement !== prompt) {
-      if (prompt.value !== s.text.prompt) prompt.value = s.text.prompt || '';
-    }
-    // blends
-    if (s.blend) {
-      sliders['blend.audio_text'].set(s.blend.audio_text);
-      sliders['blend.clap_clip'].set(s.blend.clap_clip);
-      sliders['blend.shader_ai'].set(s.blend.shader_ai);
-    }
-    if (s.cfg !== undefined) sliders['cfg'].set(s.cfg);
-    // mood
     if (s.mood && !dirty.has('mood')) {
       updateMoodDot(s.mood.valence, s.mood.arousal, !!s.mood.follow_audio);
-      moodFollowing = !!s.mood.follow_audio;
     }
     if (s.mood && !dirty.has('mood.follow_audio')) {
       toggleFollow.set(s.mood.follow_audio);
     }
-    // channel weights
     if (s.channel_weight) setChannelWeights(s.channel_weight);
-    // palette
     if (s.palette) {
       sliders['palette.hue'].set(s.palette.hue);
       sliders['palette.saturation'].set(s.palette.saturation);
     }
-    // fx
     if (s.fx) {
       sliders['fx.glitch'].set(s.fx.glitch);
       sliders['fx.chromatic'].set(s.fx.chromatic);
       if (!dirty.has('fx.kaleidoscope')) setKal(s.fx.kaleidoscope || 1);
     }
-    // transport
     if (s.transport) toggleFreeze.set(s.transport.freeze);
   }
 
-  // ---------------------------------------------------------------- //
-  //  Render fast features (meters)                                   //
-  // ---------------------------------------------------------------- //
   function setWsState(text, ok) {
     wsState.textContent = text;
     wsState.className = 'value ' + (ok ? 'ok' : 'err');
@@ -1009,46 +831,21 @@
       const cell = cells[i];
       const rmsDb = ampToDb(rms[i] || 0);
       const peakDb = ampToDb(peak[i] || 0);
-
       cell.fill.style.height = (dbToFrac(rmsDb) * 100) + '%';
-
       const c = centroid[i] || 0;
       if (c > 0) cell.root.style.setProperty('--hue', centroidToHue(c));
-
       if (peakDb > cell.lastPeakDb || (now - cell.lastPeakAt) > PEAK_HOLD_MS) {
         cell.lastPeakDb = peakDb;
         cell.lastPeakAt = now;
       }
       cell.peak.style.bottom = (dbToFrac(cell.lastPeakDb) * 100) + '%';
-
       cell.flash.style.opacity = onsets[i] || 0;
       cell.value.textContent = rmsDb <= FLOOR_DB ? '–∞' : rmsDb.toFixed(0);
       cell.root.classList.toggle('silent', (rms[i] || 0) < 1e-5);
     }
 
     renderClap(data.slow);
-    renderAi(data.ai);
-
-    // Sync controls from server's authoritative state. Dirty flags
-    // protect controls the user is currently dragging.
     applyState(data.state);
-  }
-
-  function renderAi(ai) {
-    if (ai === null || ai === undefined) {
-      // AI tier disabled (--no-ai or omitted).
-      aiState.textContent = 'off';
-      aiState.className = 'value';
-      return;
-    }
-    if (!ai.gen_count) {
-      // AI on but warming up (model load + first inference).
-      aiState.textContent = 'warming up…';
-      aiState.className = 'value';
-      return;
-    }
-    aiState.textContent = `gen #${ai.gen_count} · ${ai.latency_ms.toFixed(0)}ms`;
-    aiState.className = 'value ok';
   }
 
   function renderClap(slow) {
@@ -1085,25 +882,17 @@
       cell.style.height = (3 + v * 36) + 'px';
       cell.style.background = `hsl(${30 + (i / CLAP_BARS) * 170}, 60%, ${20 + v * 40}%)`;
     }
-    lastClapUpdate = slow.update_count;
     clapMeta.textContent =
       `update #${slow.update_count} · ${slow.inference_ms.toFixed(0)}ms · ‖z‖=${slow.embedding_norm.toFixed(2)} · ${slow.model_name.split('/').pop()}`;
   }
 
-  // ---------------------------------------------------------------- //
-  //  WebSocket                                                       //
-  // ---------------------------------------------------------------- //
   let ws = null;
   let reconnectTimer = null;
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws`);
     setWsState('connecting…', false);
-    ws.onopen = () => {
-      setWsState('connected', true);
-      // refresh presets every reconnect — they may have changed via OSC etc.
-      refreshPresets();
-    };
+    ws.onopen = () => { setWsState('connected', true); refreshPresets(); };
     ws.onmessage = (ev) => {
       try { render(JSON.parse(ev.data)); }
       catch (e) { console.error('bad message', e); }
@@ -1120,7 +909,6 @@
   }
   connect();
 
-  // Seed UI with current state on load (in case WS hasn't arrived yet).
   fetch('/api/state').then(r => r.json()).then(applyState).catch(() => {});
 })();
 </script>

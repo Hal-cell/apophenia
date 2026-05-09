@@ -1,13 +1,12 @@
 """FastAPI server: localhost web UI + WebSocket fast-feature broadcast +
 state / preset HTTP API.
 
-Phase 6 surface (additions to phase 5 marked ★):
+Phase 10 surface (post AI/text strip):
     GET    /                  → static `web/index.html`
     GET    /static/*          → static assets (CSS, JS, etc.)
-    GET    /health            → JSON liveness probe (now reports AI status ★)
+    GET    /health            → JSON liveness probe
     WS     /ws                → JSON stream at `broadcast_hz` carrying
                                  fast features + slow features + state
-                                 + AI metadata ★
     GET    /api/state         → current `VisualState` as JSON
     PATCH  /api/state         → partial state update (deep-merged)
     GET    /api/presets       → all 16 preset slots
@@ -21,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -44,9 +43,6 @@ from apophenia.control.presets import (
 )
 from apophenia.control.state_bus import StateBus
 
-if TYPE_CHECKING:
-    from apophenia.ai.bus import AIBus
-
 WEB_DIR = Path(__file__).parent / "web"
 
 
@@ -56,15 +52,13 @@ def make_app(
     state_bus: StateBus | None = None,
     preset_path: Path | None = None,
     broadcast_hz: float = 30.0,
-    ai_bus: AIBus | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app instance.
 
     `state_bus` and `preset_path` are optional; if omitted, a fresh
     `StateBus` is created and presets land at the default
     `~/.config/apophenia/presets.json`. Tests pass explicit instances
-    so they don't trample the user's real preset bank. `ai_bus` is the
-    AI tier mailbox; when None, the /ws payload reports `ai: null`.
+    so they don't trample the user's real preset bank.
     """
     if broadcast_hz <= 0:
         raise ValueError("broadcast_hz must be > 0")
@@ -72,9 +66,6 @@ def make_app(
     if state_bus is None:
         state_bus = StateBus()
 
-    # Preset bank: load from disk lazily on first use, persist on every
-    # save/clear. Lock guards the in-memory copy against concurrent
-    # API calls.
     bank_lock = threading.Lock()
     bank: list[PresetBank] = [load_bank(preset_path)]
 
@@ -86,10 +77,6 @@ def make_app(
 
     app = FastAPI(title="apophenia control", docs_url=None, redoc_url=None)
 
-    # ------------------------------------------------------------------ #
-    # Static + index
-    # ------------------------------------------------------------------ #
-
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html", media_type="text/html")
@@ -98,7 +85,6 @@ def make_app(
     async def health() -> JSONResponse:
         latest = bus.latest()
         slow = slow_bus.latest() if slow_bus else None
-        ai = ai_bus.latest() if ai_bus else None
         return JSONResponse(
             {
                 "ok": True,
@@ -106,17 +92,11 @@ def make_app(
                 "block_count": latest.block_count if latest else 0,
                 "slow_active": slow_bus is not None,
                 "slow_updates": slow.update_count if slow else 0,
-                "ai_active": ai_bus is not None,
-                "ai_gens": ai.gen_count if ai else 0,
             }
         )
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
-
-    # ------------------------------------------------------------------ #
-    # State API
-    # ------------------------------------------------------------------ #
 
     @app.get("/api/state")
     async def get_state() -> JSONResponse:
@@ -133,10 +113,6 @@ def make_app(
                 detail={"errors": e.errors(include_url=False)},
             ) from e
         return JSONResponse(new_state.model_dump())
-
-    # ------------------------------------------------------------------ #
-    # Preset API
-    # ------------------------------------------------------------------ #
 
     def _check_idx(idx: int) -> None:
         if idx < 0 or idx >= PRESET_BANK_SIZE:
@@ -179,10 +155,6 @@ def make_app(
             save_bank(new_bank, preset_path)
             return JSONResponse(new_bank.model_dump())
 
-    # ------------------------------------------------------------------ #
-    # WebSocket: features + state every tick
-    # ------------------------------------------------------------------ #
-
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -196,11 +168,6 @@ def make_app(
                         payload["slow"] = slow.to_dict() if slow else None
                     else:
                         payload["slow"] = None
-                    if ai_bus is not None:
-                        ai = ai_bus.latest()
-                        payload["ai"] = ai.to_dict() if ai else None
-                    else:
-                        payload["ai"] = None
                     payload["state"] = state_bus.get().model_dump()
                     await websocket.send_json(payload)
                 await asyncio.sleep(period)
