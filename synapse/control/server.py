@@ -11,7 +11,7 @@ Phase-16 surface (post-pivot):
 
 The server is a *viewer* — it does not accept any control input. All
 output to MaxMSP / external systems goes via OSC (see
-`conduit.osc_out`); the web UI is for live audio-quality debugging
+`synapse.osc_out`); the web UI is for live audio-quality debugging
 ("is the right channel mapping plugged in?", "is gate triggering?",
 "is the spectrum reasonable?").
 """
@@ -25,8 +25,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from conduit.audio.features_fast import FeatureBus
-from conduit.audio.features_slow import SlowBus
+from synapse.audio.features_fast import FeatureBus
+from synapse.audio.features_slow import SlowBus
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -47,7 +47,7 @@ def make_app(
         raise ValueError("broadcast_hz must be > 0")
     period = 1.0 / broadcast_hz
 
-    app = FastAPI(title="conduit · audio analysis", docs_url=None, redoc_url=None)
+    app = FastAPI(title="synapse · audio analysis", docs_url=None, redoc_url=None)
 
     @app.get("/")
     async def index() -> FileResponse:

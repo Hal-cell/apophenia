@@ -1,4 +1,4 @@
-"""conduit CLI entry point.
+"""synapse CLI entry point.
 
 Subcommands:
     run         spin up audio capture + meter web UI
@@ -27,18 +27,21 @@ import typer
 import uvicorn
 from rich.console import Console
 
-from conduit.audio.features_fast import FeatureBus, fast_features_loop
-from conduit.audio.features_slow import (
+from synapse.analysis import CVDetector, GateDetector
+from synapse.audio.features_fast import FeatureBus, fast_features_loop
+from synapse.audio.features_slow import (
     CLAP_WINDOW_SECONDS,
     AudioBuffer,
     SlowBus,
     slow_features_loop,
 )
-from conduit.audio.source import parse_source_arg
-from conduit.control.server import make_app
+from synapse.audio.source import parse_source_arg
+from synapse.channels import ChannelMap, ChannelRole
+from synapse.control.server import make_app
+from synapse.osc import OSCSender
 
 app = typer.Typer(
-    name="conduit",
+    name="synapse",
     help="Multichannel audio analyser → MaxMSP bridge.",
     no_args_is_help=True,
     add_completion=False,
@@ -66,6 +69,35 @@ def run(
         "--clap/--no-clap",
         help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB.",
     ),
+    gate_channels: str = typer.Option(
+        "",
+        "--gate",
+        help="Channels carrying Eurorack gate / trigger signals. Range syntax: '1,2,5-8'. "
+             "These get Schmitt-trigger detection + edge events on OSC.",
+    ),
+    cv_channels: str = typer.Option(
+        "",
+        "--cv",
+        help="Channels carrying Eurorack control voltage. Range syntax: '3-6'. "
+             "These get IIR-low-pass DC value + rate-of-change on OSC.",
+    ),
+    audio_channels: str = typer.Option(
+        "",
+        "--audio",
+        help="Channels carrying audio (default for unassigned channels). "
+             "Range syntax: '7-14'. These get full RMS / centroid / onset analysis.",
+    ),
+    osc_host: str = typer.Option(
+        "127.0.0.1",
+        "--osc-host",
+        help="OSC destination host. Defaults to localhost (Max on the same machine).",
+    ),
+    osc_port: int = typer.Option(
+        9000, "--osc-port", help="OSC destination UDP port."
+    ),
+    no_osc: bool = typer.Option(
+        False, "--no-osc", help="Disable OSC output (web meter only)."
+    ),
 ) -> None:
     """Run audio capture + meter web UI.
 
@@ -78,6 +110,27 @@ def run(
     src = parse_source_arg(source)
     bus = FeatureBus()
     stop_event = threading.Event()
+
+    # ---- Channel role map (which channels are gates / cvs / audio). ---- #
+    # Defaults: any channel not in --gate / --cv / --audio is audio.
+    channel_map = ChannelMap.from_cli(
+        n_channels=src.n_channels,
+        gate=gate_channels or None,
+        cv=cv_channels or None,
+        audio=audio_channels or None,
+    )
+
+    # ---- Detectors ---- #
+    # Audio block rate (block_size samples at the source's sample_rate).
+    # CV detector + gate detector both run at this rate.
+    block_rate = src.sample_rate / src.block_size
+    cv_idx = channel_map.channels_with(ChannelRole.CV)
+    gate_idx = channel_map.channels_with(ChannelRole.GATE)
+    cv_detector = CVDetector(cv_idx, block_rate_hz=block_rate) if cv_idx else None
+    gate_detector = GateDetector(gate_idx) if gate_idx else None
+
+    # ---- OSC sender ---- #
+    osc_sender = None if no_osc else OSCSender(host=osc_host, port=osc_port)
 
     # Slow tier (CLAP). Optional. Doesn't drive any output yet, but the
     # bus is wired so future OSC streams can carry mood / embedding.
@@ -102,6 +155,11 @@ def run(
     audio_thread = threading.Thread(
         target=fast_features_loop,
         args=(src, bus, stop_event, audio_buffer),
+        kwargs={
+            "cv_detector": cv_detector,
+            "gate_detector": gate_detector,
+            "osc_sender": osc_sender,
+        },
         name="audio_features_fast",
         daemon=True,
     )
@@ -110,15 +168,28 @@ def run(
     web_app = make_app(bus, slow_bus=slow_bus, broadcast_hz=broadcast_hz)
     url = f"http://127.0.0.1:{port}"
 
+    # 1-based channel display for the banner (matches jack labels).
+    def _ch_summary(role: ChannelRole) -> str:
+        chs = channel_map.channels_with(role)
+        if not chs:
+            return "[dim]—[/dim]"
+        return ",".join(str(i + 1) for i in chs)
+
     console.print()
-    console.print("[bold green]conduit · running[/bold green]")
+    console.print("[bold green]synapse · running[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
     )
+    console.print(f"  audio:   [cyan]{_ch_summary(ChannelRole.AUDIO)}[/cyan]")
+    console.print(f"  cv:      [cyan]{_ch_summary(ChannelRole.CV)}[/cyan]")
+    console.print(f"  gate:    [cyan]{_ch_summary(ChannelRole.GATE)}[/cyan]")
     console.print(f"  meter:   [cyan]{url}[/cyan]")
+    if osc_sender is not None:
+        console.print(f"  osc:     [cyan]{osc_host}:{osc_port}[/cyan] (bundles per audio block)")
+    else:
+        console.print("  osc:     [yellow]off[/yellow]")
     console.print(f"  clap:    {'[green]on[/green] (~1Hz)' if clap else '[yellow]off[/yellow]'}")
-    console.print("  ws hz:   30")
     console.print("  ctrl-c to stop")
     console.print()
 
@@ -137,7 +208,7 @@ def run(
 @app.command()
 def devices() -> None:
     """List Core Audio input devices visible to the system."""
-    from conduit.audio.device import list_devices
+    from synapse.audio.device import list_devices
 
     devs = list_devices()
     if not devs:
@@ -155,7 +226,7 @@ def devices() -> None:
         )
     console.print()
     console.print(
-        "[dim]use:[/dim] [cyan]conduit run --source device:\"<exact name>\"[/cyan]"
+        "[dim]use:[/dim] [cyan]synapse run --source device:\"<exact name>\"[/cyan]"
     )
 
 
@@ -202,17 +273,17 @@ def smoke(
 
 @app.command()
 def version() -> None:
-    """Print conduit + key dep versions and the active Python interpreter."""
+    """Print synapse + key dep versions and the active Python interpreter."""
     import importlib.metadata as md
     import platform
     import sys
 
     try:
-        ver = md.version("conduit")
+        ver = md.version("synapse")
     except md.PackageNotFoundError:
         ver = "unknown (not installed)"
 
-    console.print(f"[bold]conduit[/bold] {ver}")
+    console.print(f"[bold]synapse[/bold] {ver}")
     console.print(f"  python:      {platform.python_version()} ({sys.executable})")
     console.print(f"  platform:    {platform.system()} {platform.machine()}")
 
@@ -233,13 +304,13 @@ def version() -> None:
 @app.command()
 def config() -> None:
     """Print resolved paths + default audio device."""
-    console.print("[bold]conduit · resolved paths[/bold]")
+    console.print("[bold]synapse · resolved paths[/bold]")
     console.print("  [dim](no persistent state — analyser is stateless across launches)[/dim]")
 
     console.print()
     console.print("[bold]default audio source:[/bold]")
     try:
-        from conduit.audio.device import list_devices
+        from synapse.audio.device import list_devices
 
         devs = list_devices()
         if not devs:
@@ -252,7 +323,7 @@ def config() -> None:
                 f"{primary['default_samplerate']:.0f}Hz, idx {primary['index']})"
             )
             console.print(
-                "  [dim]list all with: conduit devices[/dim]"
+                "  [dim]list all with: synapse devices[/dim]"
             )
     except Exception as e:  # noqa: BLE001
         console.print(f"  [red]sounddevice unavailable:[/red] {e}")

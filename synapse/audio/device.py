@@ -7,7 +7,7 @@ the hood). Same code path serves:
   * Pro Tools Audio Bridge 16ch / 32ch / 64ch (Avid's equivalent)
   * Any other multi-channel USB / Thunderbolt interface
 
-User selects a device by exact name; `conduit devices` lists what's
+User selects a device by exact name; `synapse devices` lists what's
 available. We open a non-callback `InputStream` so reads block on the
 device's natural cadence — there's no need to pace ourselves the way
 `MockSource` does.
@@ -38,7 +38,7 @@ class DeviceSource:
 
     Args:
         device_name: exact device name as reported by Core Audio. Use
-            `conduit devices` to list what's available. Substring
+            `synapse devices` to list what's available. Substring
             matches and case-insensitive matches are NOT performed —
             the user picks the exact string.
         n_channels: how many input channels to capture (default 14).

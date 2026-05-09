@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
-    from conduit.audio.source import AudioSource
+    from synapse.audio.source import AudioSource
 
 logger = logging.getLogger(__name__)
 

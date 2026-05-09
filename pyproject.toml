@@ -1,5 +1,5 @@
 [project]
-name = "conduit"
+name = "synapse"
 version = "3.0.0"
 description = "Multichannel audio analyser → MaxMSP bridge (CV / gate / spectrum over OSC)"
 authors = [{ name = "Hal Xu" }]
@@ -42,10 +42,10 @@ dev = [
 ]
 
 [project.scripts]
-conduit = "conduit.cli:main"
+synapse = "synapse.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["conduit"]
+packages = ["synapse"]
 
 [build-system]
 requires = ["hatchling"]

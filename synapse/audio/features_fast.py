@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
-from conduit.audio.source import AudioSource
+from synapse.audio.source import AudioSource
 
 # --------------------------------------------------------------------------- #
 # Tuning constants
@@ -257,6 +257,9 @@ def fast_features_loop(
     bus: FeatureBus,
     stop_event: threading.Event,
     audio_buffer: object | None = None,
+    cv_detector: object | None = None,
+    gate_detector: object | None = None,
+    osc_sender: object | None = None,
 ) -> None:
     """Pump audio blocks through feature extraction and into the bus.
 
@@ -264,11 +267,18 @@ def fast_features_loop(
     iterator terminates (file source on a non-looping run), or the source
     raises.
 
-    If `audio_buffer` is provided (an `AudioBuffer` from
-    features_slow), each incoming block is also written to that ring
-    so the slow worker has a continuously-updated 1-2s window of audio
-    available for CLAP inference. Typed as `object` here to keep
-    features_fast importable without features_slow's torch deps.
+    Optional detectors / outputs:
+      * `audio_buffer` — an `AudioBuffer` (from features_slow) that the
+        slow CLAP worker reads from. Each block also gets written here.
+      * `cv_detector`  — a `CVDetector` for slow DC value extraction.
+      * `gate_detector` — a `GateDetector` for Schmitt-triggered binary
+        state + edge events.
+      * `osc_sender`   — an `OSCSender` that ships every block's
+        features as one OSC bundle to MaxMSP / any UDP listener.
+
+    All four params are typed `object` to keep features_fast cheap to
+    import — they live in sibling packages with their own deps that we
+    don't want this module pulling in transitively.
     """
     source.open()
     block_count = 0
@@ -288,19 +298,34 @@ def fast_features_loop(
                 audio_buffer.write(block)  # type: ignore[attr-defined]
             rms, peak, centroid = compute_block_features(block, source.sample_rate, window=window)
             envelope = detector.update(rms)
-            bus.publish(
-                FastFeatures(
-                    rms=rms.tolist(),
-                    peak=peak.tolist(),
-                    centroid=centroid.tolist(),
-                    onset_envelope=envelope.tolist(),
-                    block_count=block_count,
-                    timestamp=time.monotonic() - t0,
-                    source_name=type(source).__name__,
-                    sample_rate=source.sample_rate,
-                    block_size=source.block_size,
-                    n_channels=source.n_channels,
-                )
+            fast_features = FastFeatures(
+                rms=rms.tolist(),
+                peak=peak.tolist(),
+                centroid=centroid.tolist(),
+                onset_envelope=envelope.tolist(),
+                block_count=block_count,
+                timestamp=time.monotonic() - t0,
+                source_name=type(source).__name__,
+                sample_rate=source.sample_rate,
+                block_size=source.block_size,
+                n_channels=source.n_channels,
             )
+            bus.publish(fast_features)
+
+            cv_features = (
+                cv_detector.process(block, block_count)  # type: ignore[attr-defined]
+                if cv_detector is not None else None
+            )
+            gate_features = (
+                gate_detector.process(block, block_count)  # type: ignore[attr-defined]
+                if gate_detector is not None else None
+            )
+
+            if osc_sender is not None:
+                osc_sender.send_block(  # type: ignore[attr-defined]
+                    fast_features, cv=cv_features, gate=gate_features,
+                )
     finally:
         source.close()
+
+
