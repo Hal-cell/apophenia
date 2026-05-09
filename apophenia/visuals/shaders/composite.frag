@@ -2,20 +2,27 @@
 
 // COMPOSITOR — final post-FX stage applied to the shader-engine output.
 //
-// Pipeline (per pixel):
+// Phase 12 pipeline (per pixel):
 //   v_uv → kaleidoscope wedge fold → glitch row displacement →
 //   sample shader_tex with chromatic per-channel UV offsets →
+//   pyramid bloom (sample 3 mipmap levels of shader_tex, threshold
+//                 by luma, add the bright-passing portion back) →
 //   saturation
 //
-// Phase 10: this stage no longer mixes an AI-generated texture; the
-// SDXL pipeline was removed. Whatever the shader engine drew into the
-// offscreen FBO is what gets warped + recoloured here.
+// Bloom maths: instead of running a separate Gaussian blur pass we
+// rely on the texture's mipmap chain — each mip is a 2× downsample
+// with a built-in 2×2 box filter, so reading mipmap level L is
+// roughly equivalent to a Gaussian blur of radius 2^L. Sampling
+// levels 2/4/6 and combining gives a 3-octave pyramid that approximates
+// a full-spectrum bloom for ~3 texture lookups (vs. ~25 for a separable
+// Gaussian).
 
 uniform sampler2D u_shader_tex;
 uniform float     u_glitch;
 uniform float     u_chromatic;
 uniform int       u_kaleidoscope_segments;
 uniform float     u_saturation;
+uniform float     u_bloom;
 uniform float     u_time;
 
 in  vec2 v_uv;
@@ -41,9 +48,6 @@ vec2 kaleidoscope(vec2 uv, int segments) {
 
 vec2 glitch_uv(vec2 uv, float intensity, float t) {
     if (intensity <= 0.0) return uv;
-    // Quantise to ~40 horizontal rows; per-row hash gives chunky block
-    // displacement that animates over time. Threshold ~85% so most
-    // rows pass through cleanly.
     float row = floor(uv.y * 40.0);
     float h = hash11(row + floor(t * 8.0) * 0.137);
     float displaced = (h > 0.85) ? (h * 2.0 - 1.0) : 0.0;
@@ -53,6 +57,67 @@ vec2 glitch_uv(vec2 uv, float intensity, float t) {
 vec3 apply_saturation(vec3 rgb, float s) {
     float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
     return mix(vec3(luma), rgb, s);
+}
+
+// Bloom: 24-tap Poisson-disk-style Gaussian sample of the shader FBO,
+// reading from mipmap level 2 (already 4× box-filtered → smoother and
+// cheaper than 24 lod-0 taps would be). The taps span three concentric
+// rings at UV radii ≈ 0.04 / 0.08 / 0.15 — ≈ 4% / 8% / 15% of screen
+// width. Weights follow a rough Gaussian over the ring radii so the
+// energy decays with distance.
+//
+// Soft luma threshold: only pixels brighter than ~0.3 luma contribute.
+// Below that we fade out smoothly to avoid a hard cutoff that would
+// produce ringing in faint regions.
+vec3 bloom_sample(vec2 uv, float strength) {
+    if (strength <= 0.0) return vec3(0.0);
+
+    const int N = 24;
+    // Pre-tabulated Poisson-disk-ish offsets across 3 concentric rings.
+    const vec2 OFFS[24] = vec2[24](
+        vec2( 0.000,  0.000),
+        // inner ring r ≈ 0.04
+        vec2( 0.040,  0.000), vec2(-0.040,  0.000),
+        vec2( 0.000,  0.040), vec2( 0.000, -0.040),
+        vec2( 0.028,  0.028), vec2(-0.028,  0.028),
+        vec2( 0.028, -0.028), vec2(-0.028, -0.028),
+        // mid ring r ≈ 0.08
+        vec2( 0.080,  0.000), vec2(-0.080,  0.000),
+        vec2( 0.000,  0.080), vec2( 0.000, -0.080),
+        vec2( 0.057,  0.057), vec2(-0.057,  0.057),
+        vec2( 0.057, -0.057), vec2(-0.057, -0.057),
+        // outer ring r ≈ 0.15
+        vec2( 0.150,  0.000), vec2(-0.150,  0.000),
+        vec2( 0.000,  0.150), vec2( 0.000, -0.150),
+        vec2( 0.106,  0.106), vec2(-0.106,  0.106),
+        vec2( 0.106, -0.106)
+    );
+    const float W[24] = float[24](
+        0.10,
+        0.05, 0.05, 0.05, 0.05,
+        0.04, 0.04, 0.04, 0.04,
+        0.030, 0.030, 0.030, 0.030,
+        0.025, 0.025, 0.025, 0.025,
+        0.020, 0.020, 0.020, 0.020,
+        0.015, 0.015, 0.015
+    );
+
+    // Per-sample threshold: each tap contributes only if it's bright
+    // enough on its own (otherwise dim neighbours dilute the glow when
+    // we average then threshold). This is the high-pass-then-blur
+    // ordering that real bloom wants.
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < N; i++) {
+        vec3 c = textureLod(u_shader_tex, uv + OFFS[i], 2.0).rgb;
+        float l = dot(c, vec3(0.299, 0.587, 0.114));
+        // Soft per-sample threshold; faint contributions fade smoothly.
+        // Tuned permissive (kicks in ~0.15 luma) so layered shaders
+        // glow even when individual layers' peak luma is modest.
+        float gate = smoothstep(0.15, 0.55, l);
+        sum += c * gate * W[i];
+    }
+
+    return sum * strength * 2.4;
 }
 
 void main() {
@@ -65,8 +130,12 @@ void main() {
     float r = texture(u_shader_tex, uv + vec2(-aberr, 0.0)).r;
     vec3  g = texture(u_shader_tex, uv).rgb;
     float b = texture(u_shader_tex, uv + vec2( aberr, 0.0)).b;
-    vec3 mixed = vec3(r, g.g, b);
+    vec3 base = vec3(r, g.g, b);
 
-    mixed = apply_saturation(mixed, u_saturation);
-    fragColor = vec4(mixed, 1.0);
+    // Add bloom, sampled at the centre UV so chromatic split doesn't
+    // muddy the high-frequency glow.
+    base += bloom_sample(uv, u_bloom);
+
+    base = apply_saturation(base, u_saturation);
+    fragColor = vec4(base, 1.0);
 }

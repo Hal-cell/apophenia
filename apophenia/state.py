@@ -45,6 +45,14 @@ class PaletteState(BaseModel):
 class FxState(BaseModel):
     """Final-stage post-FX applied in the Compositor pass."""
 
+    bloom: float = Field(0.3, ge=0.0, le=1.0)
+    """High-pass glow that bleeds bright pixels into their
+    neighbourhood. Phase-12 pyramid bloom: composite samples the
+    shader FBO at multiple mipmap levels and adds the bright-passing
+    portion back. 0 = off, 1 = saturated. Default 0.3 = tasteful
+    always-on baseline that makes even neutral output feel polished;
+    drop to 0 for a stark / clinical look."""
+
     glitch: float = Field(0.0, ge=0.0, le=1.0)
     """Per-row UV displacement intensity; sparse rows trigger so the
     effect reads as bursts rather than a uniform shake."""
