@@ -1,33 +1,22 @@
 """Global VisualState — pydantic schema, single source of truth for what
 the renderer reads each frame.
 
-Phase 10 reshape: the V1 SDXL-Turbo image-generation tier and free-form
-text prompts have been removed. "AI视觉" going forward means an AI
-layer that controls *shader behaviour* (motion, density, energy
-distribution) — not image generation. The schema is now intentionally
-minimal: per-channel weights + a few macro modulators (mood XY,
-palette, post-FX, transport). Everything here maps directly onto a
-GLSL uniform; nothing is prose.
+Phase 13 reshape: removed the V1 control surface entirely (web UI,
+sliders, presets, mood XY pad). The state is now produced by an
+autopilot Modulator (`apophenia.autopilot.Modulator`) from
+`(wallclock_time, audio_features)` — no human input. Schema is a
+direct mirror of the GLSL uniforms the shader engine + compositor
+consume each frame.
 
-Aesthetic mandate (user-driven): all shader work going forward must
-aim for visual beauty, grounded in mathematical / physical models —
-fluid dynamics, SDF raymarching, reaction-diffusion, voronoi /
-Delaunay, strange attractors, wave equations, etc.
+Aesthetic mandate: shaders are math/physics-grounded (FBM curl
+noise, voronoi, polygon SDF, plane-wave quasicrystal interference,
+golden-angle phyllotaxis-style lattices). Going forward all new
+visuals stay in this lineage.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-
-
-class MoodState(BaseModel):
-    """Abstract 2D macro. Free for the performer to repurpose; future
-    AI-controls-shader work can read it as a coarse summary axis."""
-
-    valence: float = Field(0.0, ge=-1.0, le=1.0)
-    arousal: float = Field(0.0, ge=-1.0, le=1.0)
-    follow_audio: bool = True
-    """When True, mood follows audio analysis; when False, manual XY pad wins."""
 
 
 class PaletteState(BaseModel):
@@ -46,12 +35,9 @@ class FxState(BaseModel):
     """Final-stage post-FX applied in the Compositor pass."""
 
     bloom: float = Field(0.3, ge=0.0, le=1.0)
-    """High-pass glow that bleeds bright pixels into their
-    neighbourhood. Phase-12 pyramid bloom: composite samples the
-    shader FBO at multiple mipmap levels and adds the bright-passing
-    portion back. 0 = off, 1 = saturated. Default 0.3 = tasteful
-    always-on baseline that makes even neutral output feel polished;
-    drop to 0 for a stark / clinical look."""
+    """High-pass glow that bleeds bright pixels into their neighbourhood
+    via 24-tap Poisson-disk Gaussian over mipmap level 2 of the shader
+    FBO. Default 0.3 = tasteful baseline."""
 
     glitch: float = Field(0.0, ge=0.0, le=1.0)
     """Per-row UV displacement intensity; sparse rows trigger so the
@@ -68,7 +54,7 @@ class TransportState(BaseModel):
     freeze: bool = False
     """When True, the shader engine holds the last (features, time)
     pair so the picture is a tableau. Channel weights / palette / FX
-    still update live so the user can sculpt the frozen frame."""
+    still update live so the modulator can sculpt the frozen frame."""
 
 
 N_CHANNELS = 14
@@ -77,15 +63,14 @@ N_CHANNELS = 14
 class VisualState(BaseModel):
     """Everything the renderer needs to draw one frame.
 
-    Fields exhaustively cover the live performance surface:
-      * channel_weight[14] — per-channel mute / scale
-      * mood              — 2D macro
-      * palette           — global hue + saturation
-      * fx                — post-FX trio
-      * transport         — freeze
+    Built per-frame by `apophenia.autopilot.Modulator.state(t, features)`.
+    Fields:
+      * channel_weight[14] — Gaussian "spotlight" wandering across channels
+      * palette            — global hue + saturation
+      * fx                 — bloom / glitch / chromatic / kaleidoscope
+      * transport          — freeze (rare; for tableau moments)
     """
 
-    mood: MoodState = Field(default_factory=MoodState)
     channel_weight: list[float] = Field(default_factory=lambda: [1.0] * N_CHANNELS)
     palette: PaletteState = Field(default_factory=PaletteState)
     fx: FxState = Field(default_factory=FxState)

@@ -35,7 +35,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from apophenia.audio.features_fast import FastFeatures, FeatureBus
-    from apophenia.control.state_bus import StateBus
+    from apophenia.autopilot import Modulator
     from apophenia.state import VisualState
 
 logger = logging.getLogger(__name__)
@@ -368,15 +368,16 @@ class Compositor:
 class ApopheniaWindow(mglw.WindowConfig):
     """Render window for live visuals.
 
-    Class attributes (`bus`, `state_bus`) are set by `cli.run` BEFORE
+    Class attributes (`bus`, `modulator`) are set by `cli.run` BEFORE
     `mglw.run_window_config(ApopheniaWindow, args=[])` instantiates
     this. moderngl_window doesn't pass our config through __init__, so
     we bridge via class state.
 
-    Phase 10: the rendering path is always shaders → offscreen FBO →
-    Compositor (post-FX) → window. The Compositor is unconditional now
-    that the AI texture pair is gone — its overhead is one full-screen
-    quad pass (~0.1ms at 1080p), trivial against the shader cost.
+    Phase 13: the V1 control surface is gone. The visual is driven by
+    an `autopilot.Modulator` — slow wanderers + audio coupling produce
+    a fresh `VisualState` each frame, no human input. The pipeline is:
+        audio → modulator → state → engine → offscreen FBO → compositor
+        (post-FX) → window
     """
 
     title = "apophenia"
@@ -389,7 +390,7 @@ class ApopheniaWindow(mglw.WindowConfig):
 
     # Set externally before the window launches.
     bus: FeatureBus | None = None
-    state_bus: StateBus | None = None
+    modulator: Modulator | None = None
     fps_log_period_s: float = 5.0
 
     def __init__(self, **kwargs: object) -> None:
@@ -399,7 +400,7 @@ class ApopheniaWindow(mglw.WindowConfig):
                 "ApopheniaWindow.bus must be set before mglw.run_window_config"
             )
         self._bus_ref: FeatureBus = ApopheniaWindow.bus
-        self._state_bus_ref: StateBus | None = ApopheniaWindow.state_bus
+        self._modulator_ref: Modulator | None = ApopheniaWindow.modulator
         self.engine = ShaderEngine(self.ctx)
         self.compositor = Compositor(self.ctx)
         self._frame_count = 0
@@ -414,7 +415,7 @@ class ApopheniaWindow(mglw.WindowConfig):
             "ShaderEngine ready: %d layers across %d presets%s + post-FX",
             len(self.engine.layers),
             len(self.engine.programs),
-            "" if self._state_bus_ref is None else " (state-driven)",
+            "" if self._modulator_ref is None else " (autopilot)",
         )
 
     def on_render(self, time_s: float, frame_time: float) -> None:
@@ -433,7 +434,15 @@ class ApopheniaWindow(mglw.WindowConfig):
         # lazily when this size changes, so resize Just Works.
         size: tuple[int, int] = tuple(self.wnd.buffer_size)  # type: ignore[assignment]
 
-        state = self._state_bus_ref.get() if self._state_bus_ref is not None else None
+        # Latest live audio is what the modulator + the engine both read.
+        live_features = self._bus_ref.latest()
+
+        # Build the autopilot state for this frame from (time, audio).
+        state = (
+            self._modulator_ref.state(time_s, live_features)
+            if self._modulator_ref is not None
+            else None
+        )
 
         if state is not None and state.transport.freeze:
             # Freeze: redraw the last captured features at the last captured
@@ -442,7 +451,7 @@ class ApopheniaWindow(mglw.WindowConfig):
             features = self._frozen_features
             render_time = self._frozen_time
         else:
-            features = self._bus_ref.latest()
+            features = live_features
             render_time = time_s
             # Cache snapshot for the next freeze window.
             self._frozen_features = features

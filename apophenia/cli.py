@@ -1,7 +1,7 @@
 """apophenia CLI entry point.
 
 Subcommands:
-    run         spin up the audio capture thread + uvicorn server + render window
+    run         spin up audio capture + autopilot + GLSL render window
     devices     list available Core Audio input devices
     smoke       run the source for a few seconds and print frame stats
     version     print package + dep versions
@@ -13,11 +13,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import webbrowser
 
 import numpy as np
 import typer
-import uvicorn
 from rich.console import Console
 
 from apophenia.audio.features_fast import FeatureBus, fast_features_loop
@@ -28,12 +26,11 @@ from apophenia.audio.features_slow import (
     slow_features_loop,
 )
 from apophenia.audio.source import parse_source_arg
-from apophenia.control.server import make_app
-from apophenia.control.state_bus import StateBus
+from apophenia.autopilot import Modulator
 
 app = typer.Typer(
     name="apophenia",
-    help="Multi-channel audio-reactive AV instrument.",
+    help="Self-evolving audio-reactive AV instrument.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -48,43 +45,33 @@ def run(
         "-s",
         help="Audio source spec: 'mock', 'mock:<pattern>', 'file:<path>', 'device:<name>'.",
     ),
-    port: int = typer.Option(8000, "--port", "-p", help="HTTP / WebSocket port."),
-    no_browser: bool = typer.Option(
-        False, "--no-browser", help="Don't auto-open the meter URL in your default browser."
-    ),
-    broadcast_hz: float = typer.Option(
-        30.0, "--broadcast-hz", help="WebSocket fast-feature broadcast rate."
-    ),
-    render: bool = typer.Option(
-        True,
-        "--render/--no-render",
-        help="Open the GLSL render window. --no-render keeps just audio + meter web UI.",
-    ),
     clap: bool = typer.Option(
         True,
         "--clap/--no-clap",
-        help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB. --no-clap skips it.",
+        help="Run CLAP audio embedding at ~1Hz. First call downloads ~600MB.",
+    ),
+    seed: int = typer.Option(
+        0,
+        "--seed",
+        help="Autopilot RNG seed. Same seed → same wanderer trajectories. "
+             "0 = use wallclock for a fresh evolution each launch.",
     ),
 ) -> None:
-    """Run audio capture + meter web UI + (optionally) the render window.
+    """Run audio capture + autopilot + render window.
 
-    Audio thread + uvicorn (web meter) + GLSL render window all run
-    together. Render window owns the main thread (Cocoa requires GUI on
-    main); audio + uvicorn live in daemon threads.
-
-    `--no-render` falls back to the headless path: server runs on the
-    main thread, no render window. Useful for remote / dev sessions.
+    The render window owns the main thread (Cocoa requires GUI on
+    main); audio + slow tier live in daemon threads. The autopilot
+    is in-process and called per render frame, no thread of its own.
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     src = parse_source_arg(source)
     bus = FeatureBus()
-    state_bus = StateBus()  # default VisualState; UI patches via /api/state
     stop_event = threading.Event()
 
-    # Slow tier (CLAP). Optional via --no-clap; the AudioBuffer is the
-    # bridge from fast loop to slow worker. Buffer holds ~2s so the
-    # slow worker can always read a fresh 1s window.
+    # Slow tier (CLAP). Optional; doesn't drive the autopilot yet but
+    # the bus is wired so future modulator versions can read mood
+    # vectors from it.
     slow_bus: SlowBus | None = None
     audio_buffer: AudioBuffer | None = None
     slow_thread: threading.Thread | None = None
@@ -111,60 +98,20 @@ def run(
     )
     audio_thread.start()
 
-    web_app = make_app(
-        bus,
-        slow_bus=slow_bus,
-        state_bus=state_bus,
-        broadcast_hz=broadcast_hz,
-    )
-    url = f"http://127.0.0.1:{port}"
+    # Resolve seed: 0 means wallclock-derived (fresh each launch).
+    real_seed = seed if seed != 0 else (time.time_ns() & 0x7FFFFFFF)
+    modulator = Modulator(seed=real_seed)
 
     console.print()
-    console.print("[bold green]apophenia · running[/bold green]")
+    console.print("[bold green]apophenia · running (autopilot)[/bold green]")
     console.print(
         f"  source:  [cyan]{type(src).__name__}[/cyan]  "
         f"({src.n_channels}ch @ {src.sample_rate}Hz, block {src.block_size})"
     )
-    console.print(f"  meter:   [cyan]{url}[/cyan]")
-    console.print(f"  render:  {'[green]on[/green] (GLSL window)' if render else '[yellow]off[/yellow]'}")
     console.print(f"  clap:    {'[green]on[/green] (~1Hz)' if clap else '[yellow]off[/yellow]'}")
-    console.print("  ws hz:   30")
+    console.print(f"  seed:    [cyan]{real_seed}[/cyan]")
     console.print("  ctrl-c (terminal) or close window to stop")
     console.print()
-
-    if not no_browser:
-        threading.Timer(0.25, lambda: webbrowser.open(url)).start()
-
-    if not render:
-        # Headless path: uvicorn on main thread, audio in background.
-        try:
-            uvicorn.run(web_app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
-        finally:
-            stop_event.set()
-            audio_thread.join(timeout=1.0)
-            if slow_thread is not None:
-                slow_thread.join(timeout=2.0)
-        return
-
-    # --- render-on path (default) ---
-    config = uvicorn.Config(
-        web_app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
-
-    def _serve() -> None:
-        try:
-            server.run()
-        except Exception:  # noqa: BLE001
-            logging.getLogger(__name__).exception("uvicorn died")
-
-    server_thread = threading.Thread(target=_serve, name="uvicorn", daemon=True)
-    server_thread.start()
-    time.sleep(0.25)
 
     try:
         import moderngl_window as mglw
@@ -172,21 +119,23 @@ def run(
         from apophenia.visuals.shader_engine import ApopheniaWindow
     except ImportError as e:
         console.print(
-            f"[red]render requested but visuals extras aren't installed:[/red] {e}"
+            f"[red]render requires the visuals extra:[/red] {e}"
         )
         console.print("[yellow]install with:[/yellow] uv sync --extra visuals")
         stop_event.set()
-        server.should_exit = True
+        audio_thread.join(timeout=1.0)
+        if slow_thread is not None:
+            slow_thread.join(timeout=2.0)
         return
 
     ApopheniaWindow.bus = bus
-    ApopheniaWindow.state_bus = state_bus
+    ApopheniaWindow.modulator = modulator
 
     # Bug workaround: moderngl_window's parse_args does
     # `args or sys.argv[1:]` (line 384, mglw 3.1.1), and an empty list
     # is falsy in Python, so passing `args=[]` to ask mglw to use only
     # WindowConfig defaults still ends up parsing user's CLI argv —
-    # which contains typer's `run --source ... --no-browser` flags and
+    # which contains typer's `run --source ... --clap` flags and
     # crashes argparse. Temporarily swap sys.argv to just the program
     # name so the fallback also yields an empty list.
     import sys
@@ -198,11 +147,9 @@ def run(
     finally:
         sys.argv = saved_argv
         stop_event.set()
-        server.should_exit = True
         audio_thread.join(timeout=1.0)
         if slow_thread is not None:
             slow_thread.join(timeout=2.0)
-        server_thread.join(timeout=2.0)
 
 
 @app.command()
@@ -294,7 +241,6 @@ def version() -> None:
             return "[dim]not installed[/dim]"
 
     console.print(f"  numpy:       {_pkg('numpy')}")
-    console.print(f"  fastapi:     {_pkg('fastapi')}")
     console.print(f"  pydantic:    {_pkg('pydantic')}")
     console.print(f"  sounddevice: {_pkg('sounddevice')}")
     console.print(f"  moderngl:    {_pkg('moderngl')}    (visuals extra)")
@@ -304,16 +250,9 @@ def version() -> None:
 
 @app.command()
 def config() -> None:
-    """Print the resolved paths apophenia uses."""
-    from apophenia.control.presets import default_path
-
-    preset_path = default_path()
-
+    """Print the resolved paths apophenia uses + default audio device."""
     console.print("[bold]apophenia · resolved paths[/bold]")
-    console.print(f"  presets:     [cyan]{preset_path}[/cyan]")
-    console.print(
-        f"               [dim]({'exists' if preset_path.exists() else 'will be created on first run'})[/dim]"
-    )
+    console.print("  [dim](no persistent state — autopilot is deterministic from seed)[/dim]")
 
     console.print()
     console.print("[bold]default audio source:[/bold]")
