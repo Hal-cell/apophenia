@@ -753,6 +753,146 @@ def test_compute_emitter_positions_unknown_pattern_falls_back_to_ring() -> None:
     np.testing.assert_array_almost_equal(pos, pos_ring)
 
 
+def test_default_n_particles_is_100k() -> None:
+    """Phase-18: default density bumped from 50k → 100k for the
+    TD-cluster look. Test catches a future accidental downgrade."""
+    from apophenia.visuals.particle_engine import ParticleEngine
+
+    assert ParticleEngine.DEFAULT_N_PARTICLES == 100_000
+
+
+def test_pattern_morph_interpolates_between_patterns() -> None:
+    """Phase-18 pattern morph: when state.emitter.pattern changes mid-run,
+    the engine should interpolate between the two pattern positions
+    over PATTERN_MORPH_S seconds. Test verifies that mid-transition
+    positions are bounded by the two endpoint patterns and end-state
+    matches the new target.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.audio.features_fast import FastFeatures
+        from apophenia.state import VisualState
+        from apophenia.visuals.particle_engine import (
+            PATTERN_MORPH_S,
+            ParticleEngine,
+            compute_emitter_positions,
+        )
+
+        pe = ParticleEngine(ctx, n_particles=200)
+
+        # Silent audio so no onset pulse mucks with the comparison.
+        silent = FastFeatures(
+            rms=[0.0] * 14, peak=[0.0] * 14,
+            centroid=[0.0] * 14, onset_envelope=[0.0] * 14,
+            n_channels=14,
+        )
+        state = VisualState()  # default ring
+        state.emitter.motion_amp = 0.0  # disable drift to isolate morph
+
+        # Tick once at t=0 to seed prev=ring.
+        pe.update_and_render(silent, time_s=0.0, dt=0.016,
+                             resolution=(64, 64), state=state)
+
+        # Now switch to sphere pattern.
+        state.emitter.pattern = "sphere"
+
+        # Mid-morph (t = 0.4s = halfway through PATTERN_MORPH_S=0.8).
+        pe.update_and_render(silent, time_s=0.4, dt=0.016,
+                             resolution=(64, 64), state=state)
+        # Read back emitter positions via the test helper since they're
+        # not stored anywhere accessible. Use the public free fn.
+        ring = compute_emitter_positions("ring", 1.6, 0.0, 0.0, 0.0)
+        sphere = compute_emitter_positions("sphere", 1.6, 0.0, 0.0, 0.0)
+        # The morphed positions should be a smoothstep blend at t=0.5.
+        # We can't easily peek at the engine's last computed positions,
+        # so directly call the engine method:
+        mid = pe._dynamic_emitter_positions(
+            pattern="sphere", radius=1.6,
+            motion_amp=0.0, motion_speed=0.0,
+            time_s=0.4,
+            rms=np.zeros(14, dtype=np.float32),
+            onset=np.zeros(14, dtype=np.float32),
+            weight=np.ones(14, dtype=np.float32),
+        )
+        # Each emitter's mid position should sit between ring and sphere
+        # endpoints (within a small numerical tolerance).
+        for i in range(14):
+            for axis in range(3):
+                lo = min(ring[i, axis], sphere[i, axis])
+                hi = max(ring[i, axis], sphere[i, axis])
+                assert lo - 0.05 <= mid[i, axis] <= hi + 0.05, (
+                    f"emitter {i} axis {axis} mid {mid[i, axis]} not "
+                    f"between {lo} and {hi}"
+                )
+
+        # After PATTERN_MORPH_S elapses, position should match sphere.
+        end = pe._dynamic_emitter_positions(
+            pattern="sphere", radius=1.6,
+            motion_amp=0.0, motion_speed=0.0,
+            time_s=0.4 + PATTERN_MORPH_S + 0.1,
+            rms=np.zeros(14, dtype=np.float32),
+            onset=np.zeros(14, dtype=np.float32),
+            weight=np.ones(14, dtype=np.float32),
+        )
+        np.testing.assert_array_almost_equal(end, sphere, decimal=3)
+    finally:
+        ctx.release()
+
+
+def test_onset_pulse_pushes_emitter_outward() -> None:
+    """Phase-18 onset pulse: when a channel onsets, its emitter pumps
+    outward (along its radial direction from origin) by an amount
+    proportional to onset envelope. Quiet channels' emitters stay put.
+    """
+    ctx = _try_make_ctx()
+    if ctx is None:
+        pytest.skip("no GL context available")
+    try:
+        from apophenia.visuals.particle_engine import ParticleEngine
+
+        pe = ParticleEngine(ctx, n_particles=100)
+
+        # Channel 0 alone gets a strong onset; everyone else silent.
+        rms = np.zeros(14, dtype=np.float32)
+        onset = np.zeros(14, dtype=np.float32)
+        onset[0] = 1.0
+        weight = np.ones(14, dtype=np.float32)
+
+        # Match against the silent-baseline emitter positions.
+        baseline = pe._dynamic_emitter_positions(
+            pattern="ring", radius=1.6,
+            motion_amp=0.0, motion_speed=0.0, time_s=0.0,
+            rms=np.zeros(14, dtype=np.float32),
+            onset=np.zeros(14, dtype=np.float32),
+            weight=weight,
+        )
+        # Now compute with ch0 onset blasted; restart engine so prev
+        # pattern is the same.
+        pe2 = ParticleEngine(ctx, n_particles=100)
+        with_pulse = pe2._dynamic_emitter_positions(
+            pattern="ring", radius=1.6,
+            motion_amp=0.0, motion_speed=0.0, time_s=0.0,
+            rms=rms, onset=onset, weight=weight,
+        )
+
+        # Ch0 emitter should be further from origin than baseline.
+        baseline_r = np.linalg.norm(baseline[0])
+        pulsed_r = np.linalg.norm(with_pulse[0])
+        assert pulsed_r > baseline_r + 0.05, (
+            f"ch0 onset should push emitter outward; baseline_r="
+            f"{baseline_r:.3f}, pulsed_r={pulsed_r:.3f}"
+        )
+
+        # Ch7 (silent) should be unchanged.
+        np.testing.assert_array_almost_equal(
+            baseline[7], with_pulse[7], decimal=4
+        )
+    finally:
+        ctx.release()
+
+
 def test_phase17_emitter_vocabulary_writes_emitter_state() -> None:
     """Phase-17 keywords write to `emitter.*`."""
     from apophenia.prompt.interpreter import PromptInterpreter
